@@ -154,6 +154,9 @@ pending_open_uri: ?[]u8,
 /// A null value means the notification is awaiting its activation token.
 notifications: std.AutoHashMapUnmanaged(u32, ?[]u8),
 color_scheme: vt.device_status.ColorScheme,
+/// Standardized XDG desktop preference; scrollbar dismissal snaps instead
+/// of fading when motion should be reduced.
+reduced_motion: bool,
 /// signalfd for process-local signals, polled in the event loop.
 signal_fd: posix.fd_t,
 /// Key repeat: timerfd armed while a repeating key is held.
@@ -181,6 +184,8 @@ search_fd: posix.fd_t,
 /// One-shot visibility delay followed by periodic scrollbar fade ticks.
 scrollbar_fd: posix.fd_t,
 scrollbar_alpha: u8,
+scrollbar_fading: bool,
+scrollbar_fade_elapsed_ms: u16,
 scrollbar_reveal_hovered: bool,
 scrollbar_hovered: bool,
 scrollbar_drag: ?ScrollbarDrag,
@@ -241,10 +246,11 @@ const search_tick_ms = 1;
 const search_ticks_per_wake = 8;
 const max_search_query_bytes = 64 * 1024;
 const scrollbar_hold_ms = 700;
-const scrollbar_fade_interval_ms = 40;
+// Fluent durationFast with curveAccelerateMin for a small exiting overlay.
+const scrollbar_fade_duration_ms = 150;
+const scrollbar_fade_interval_ms = 15;
 const scrollbar_default_alpha = 150;
 const scrollbar_hover_alpha = 220;
-const scrollbar_fade_step = 25;
 const scrollbar_width = 6;
 const scrollbar_inset = 3;
 const scrollbar_min_thumb = 24;
@@ -662,6 +668,7 @@ pub fn init(
         .pending_open_uri = null,
         .notifications = .empty,
         .color_scheme = .dark,
+        .reduced_motion = false,
         .signal_fd = signal_fd,
         .repeat_fd = repeat_fd,
         .repeat_keycode = null,
@@ -679,6 +686,8 @@ pub fn init(
         .search_fd = search_fd,
         .scrollbar_fd = scrollbar_fd,
         .scrollbar_alpha = 0,
+        .scrollbar_fading = false,
+        .scrollbar_fade_elapsed_ms = 0,
         .scrollbar_reveal_hovered = false,
         .scrollbar_hovered = false,
         .scrollbar_drag = null,
@@ -911,7 +920,7 @@ fn initDbus(self: *App) void {
     }
 
     self.dbus_fd = fd;
-    self.readPortalColorScheme();
+    self.readPortalAppearance();
 }
 
 fn deinitDbus(self: *App) void {
@@ -939,32 +948,40 @@ fn dispatchDbus(self: *App) void {
     while (c.dbus_connection_dispatch(connection) == c.DBUS_DISPATCH_DATA_REMAINS) {}
 }
 
-fn readPortalColorScheme(self: *App) void {
-    if (!build_options.enable_dbus) return;
-    const connection = self.dbus orelse return;
+fn readPortalAppearance(self: *App) void {
+    if (self.readPortalAppearanceUint32("color-scheme")) |value| {
+        self.setColorScheme(portalColorScheme(value), false);
+    }
+    if (self.readPortalAppearanceUint32("reduced-motion")) |value| {
+        self.reduced_motion = portalReducedMotion(value);
+    }
+}
+
+fn readPortalAppearanceUint32(self: *App, key: [*:0]const u8) ?u32 {
+    if (!build_options.enable_dbus) return null;
+    const connection = self.dbus orelse return null;
 
     const message = c.dbus_message_new_method_call(
         "org.freedesktop.portal.Desktop",
         "/org/freedesktop/portal/desktop",
         "org.freedesktop.portal.Settings",
         "ReadOne",
-    ) orelse return;
+    ) orelse return null;
     defer c.dbus_message_unref(message);
 
     var iter: c.DBusMessageIter = undefined;
     c.dbus_message_iter_init_append(message, &iter);
     var namespace: [*:0]const u8 = "org.freedesktop.appearance";
-    dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &namespace) catch return;
-    var key: [*:0]const u8 = "color-scheme";
-    dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &key) catch return;
+    dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &namespace) catch return null;
+    var key_ptr = key;
+    dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &key_ptr) catch return null;
 
-    const reply = c.dbus_connection_send_with_reply_and_block(connection, message, 1000, null) orelse return;
+    const reply = c.dbus_connection_send_with_reply_and_block(connection, message, 1000, null) orelse return null;
     defer c.dbus_message_unref(reply);
 
     var reply_iter: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_init(reply, &reply_iter) == 0) return;
-    const value = dbusVariantUint32(&reply_iter) orelse return;
-    self.setColorScheme(portalColorScheme(value), false);
+    if (c.dbus_message_iter_init(reply, &reply_iter) == 0) return null;
+    return dbusVariantUint32(&reply_iter);
 }
 
 fn portalColorScheme(value: u32) vt.device_status.ColorScheme {
@@ -972,6 +989,10 @@ fn portalColorScheme(value: u32) vt.device_status.ColorScheme {
         2 => .light,
         else => .dark,
     };
+}
+
+fn portalReducedMotion(value: u32) bool {
+    return value == 1;
 }
 
 fn sendDesktopNotification(self: *App, title: []const u8, body: []const u8) !void {
@@ -1303,19 +1324,34 @@ fn handlePortalSettingChanged(self: *App, message: *c.DBusMessage) void {
     if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_STRING) return;
     var key_ptr: [*:0]const u8 = undefined;
     c.dbus_message_iter_get_basic(&iter, @ptrCast(&key_ptr));
-    if (!std.mem.eql(u8, std.mem.span(key_ptr), "color-scheme")) return;
+    const key = std.mem.span(key_ptr);
+    const color_scheme_changed = std.mem.eql(u8, key, "color-scheme");
+    const reduced_motion_changed = std.mem.eql(u8, key, "reduced-motion");
+    if (!color_scheme_changed and !reduced_motion_changed) return;
 
     if (c.dbus_message_iter_next(&iter) == 0) return;
     const value = dbusVariantUint32(&iter) orelse return;
-    const color_scheme = portalColorScheme(value);
-    if (self.color_scheme == color_scheme) return;
-    self.setColorScheme(color_scheme, true);
+    if (color_scheme_changed) {
+        const color_scheme = portalColorScheme(value);
+        if (self.color_scheme != color_scheme) self.setColorScheme(color_scheme, true);
+    } else {
+        self.setReducedMotion(portalReducedMotion(value));
+    }
 }
 
 fn setColorScheme(self: *App, color_scheme: vt.device_status.ColorScheme, report: bool) void {
     self.color_scheme = color_scheme;
     self.applyColorDefaults();
     if (report and self.term.modes.get(.report_color_scheme)) self.sendColorSchemeReport();
+}
+
+fn setReducedMotion(self: *App, reduced_motion: bool) void {
+    if (self.reduced_motion == reduced_motion) return;
+    self.reduced_motion = reduced_motion;
+    if (reduced_motion and self.scrollbar_fading) {
+        self.hideScrollbar();
+        self.syncHoveredLink(true);
+    }
 }
 
 fn handleNotificationActivationToken(self: *App, message: *c.DBusMessage) void {
@@ -2656,11 +2692,15 @@ test "DA1 advertises OSC 52 clipboard support" {
     try std.testing.expectEqualStrings("\x1b[?62;22;52c", writer.buffered());
 }
 
-test "portal color scheme values map to terminal reports" {
+test "portal appearance values map to application preferences" {
     try std.testing.expectEqual(vt.device_status.ColorScheme.dark, portalColorScheme(0));
     try std.testing.expectEqual(vt.device_status.ColorScheme.dark, portalColorScheme(1));
     try std.testing.expectEqual(vt.device_status.ColorScheme.light, portalColorScheme(2));
     try std.testing.expectEqual(vt.device_status.ColorScheme.dark, portalColorScheme(99));
+
+    try std.testing.expect(!portalReducedMotion(0));
+    try std.testing.expect(portalReducedMotion(1));
+    try std.testing.expect(!portalReducedMotion(99));
 }
 
 test "XTGETTCAP reports hex encoded capabilities" {
@@ -3711,7 +3751,56 @@ fn currentScrollbarThumb(self: *App) ?Renderer.ScrollbarThumb {
     return geometry.thumb;
 }
 
+fn cubicBezierCoordinate(t: f64, control_1: f64, control_2: f64) f64 {
+    const inverse = 1.0 - t;
+    return 3.0 * inverse * inverse * t * control_1 +
+        3.0 * inverse * t * t * control_2 + t * t * t;
+}
+
+/// Evaluate Fluent's curveAccelerateMin cubic-bezier(0.8, 0, 0.78, 1)
+/// at timeline position `x`.
+fn scrollbarFadeProgress(x: f64) f64 {
+    std.debug.assert(x >= 0.0 and x <= 1.0);
+    if (x == 0.0 or x == 1.0) return x;
+
+    // CSS timing curves map x to y through the Bezier parameter. A short
+    // bisection is deterministic and more than precise enough for u8 alpha.
+    var low: f64 = 0.0;
+    var high: f64 = 1.0;
+    for (0..16) |_| {
+        const t = (low + high) / 2.0;
+        if (cubicBezierCoordinate(t, 0.8, 0.78) < x)
+            low = t
+        else
+            high = t;
+    }
+    return cubicBezierCoordinate((low + high) / 2.0, 0.0, 1.0);
+}
+
+fn scrollbarFadeAlpha(elapsed_ms: u16) u8 {
+    if (elapsed_ms >= scrollbar_fade_duration_ms) return 0;
+    const progress = @as(f64, @floatFromInt(elapsed_ms)) / scrollbar_fade_duration_ms;
+    const initial_alpha: f64 = @floatFromInt(scrollbar_default_alpha);
+    return @intFromFloat(@round(initial_alpha * (1.0 - scrollbarFadeProgress(progress))));
+}
+
+test "scrollbar fade follows Fluent accelerated exit curve" {
+    try std.testing.expectEqual(@as(u8, scrollbar_default_alpha), scrollbarFadeAlpha(0));
+    try std.testing.expectEqual(@as(u8, 0), scrollbarFadeAlpha(scrollbar_fade_duration_ms));
+    try std.testing.expect(scrollbarFadeAlpha(scrollbar_fade_duration_ms / 2) > scrollbar_default_alpha / 2);
+
+    var previous: u8 = scrollbar_default_alpha;
+    var elapsed: u16 = scrollbar_fade_interval_ms;
+    while (elapsed <= scrollbar_fade_duration_ms) : (elapsed += scrollbar_fade_interval_ms) {
+        const alpha = scrollbarFadeAlpha(elapsed);
+        try std.testing.expect(alpha <= previous);
+        previous = alpha;
+    }
+}
+
 fn armScrollbarHold(self: *App) void {
+    self.scrollbar_fading = false;
+    self.scrollbar_fade_elapsed_ms = 0;
     _ = setTimer(self.scrollbar_fd, .{
         .it_value = timespecFromNs(scrollbar_hold_ms * std.time.ns_per_ms),
         .it_interval = .{ .sec = 0, .nsec = 0 },
@@ -3720,6 +3809,8 @@ fn armScrollbarHold(self: *App) void {
 
 fn hideScrollbar(self: *App) void {
     _ = setTimer(self.scrollbar_fd, disarmed_timer, "scrollbar");
+    self.scrollbar_fading = false;
+    self.scrollbar_fade_elapsed_ms = 0;
     if (self.scrollbar_alpha == 0) return;
     self.scrollbar_alpha = 0;
     self.requestFullAsyncRedraw();
@@ -3728,6 +3819,8 @@ fn hideScrollbar(self: *App) void {
 fn revealScrollbar(self: *App) void {
     const scrollbar = self.term.screens.active.pages.scrollbar();
     const at_bottom = scrollbarAtBottom(scrollbar);
+    self.scrollbar_fading = false;
+    self.scrollbar_fade_elapsed_ms = 0;
 
     const alpha: u8 = if (self.scrollbar_drag != null or self.scrollbar_hovered)
         scrollbar_hover_alpha
@@ -3749,22 +3842,34 @@ fn fireScrollbarFade(self: *App) void {
     if (self.scrollbar_drag != null or self.scrollbar_hovered or self.scrollbar_alpha == 0 or
         (self.scrollbar_reveal_hovered and !at_bottom)) return;
 
-    const ticks: u16 = @intCast(@min(expirations, 255));
-    const first_tick = self.scrollbar_alpha == scrollbar_default_alpha;
-    const decrement: u16 = if (first_tick)
-        scrollbar_fade_step
-    else
-        ticks * scrollbar_fade_step;
-    self.scrollbar_alpha -|= @intCast(@min(decrement, self.scrollbar_alpha));
-    const hidden = self.scrollbar_alpha == 0;
-    if (hidden) {
-        _ = setTimer(self.scrollbar_fd, disarmed_timer, "scrollbar");
-    } else if (first_tick) {
+    if (self.reduced_motion) {
+        self.hideScrollbar();
+        self.syncHoveredLink(true);
+        return;
+    }
+
+    if (!self.scrollbar_fading) {
+        self.scrollbar_fading = true;
+        self.scrollbar_fade_elapsed_ms = 0;
         const interval = timespecFromNs(scrollbar_fade_interval_ms * std.time.ns_per_ms);
         _ = setTimer(self.scrollbar_fd, .{ .it_value = interval, .it_interval = interval }, "scrollbar");
+        return;
     }
-    self.requestFullAsyncRedraw();
-    if (hidden) self.syncHoveredLink(true);
+
+    const max_ticks = scrollbar_fade_duration_ms / scrollbar_fade_interval_ms;
+    const ticks: u16 = @intCast(@min(expirations, max_ticks));
+    self.scrollbar_fade_elapsed_ms = @min(
+        scrollbar_fade_duration_ms,
+        self.scrollbar_fade_elapsed_ms + ticks * scrollbar_fade_interval_ms,
+    );
+    const alpha = scrollbarFadeAlpha(self.scrollbar_fade_elapsed_ms);
+    if (alpha == 0) {
+        self.hideScrollbar();
+        self.syncHoveredLink(true);
+    } else if (alpha != self.scrollbar_alpha) {
+        self.scrollbar_alpha = alpha;
+        self.requestFullAsyncRedraw();
+    }
 }
 
 /// Route wheel scrolling (positive = towards newer content): mouse

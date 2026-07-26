@@ -21,7 +21,8 @@ Monstar is a terminal emulator for Linux and Wayland.
 - Fontconfig fonts, bundled color schemes, desktop light/dark preference,
   padding, and background opacity settings.
 - Touchpad scrolling, separate precision and discrete wheel settings,
-  rectangular selection, and link opening.
+  rectangular selection, link opening, and an overlay scrollbar that follows
+  the desktop reduced-motion preference.
 - Configuration reloads for most appearance and interaction settings.
 
 ## Performance
@@ -93,8 +94,8 @@ presentation or input latency.
 ## Linux integration
 
 - XDG desktop portals open links, local files, and directories. Portal
-  settings provide the desktop light/dark preference. Link opening uses
-  Wayland activation tokens.
+  settings provide desktop light/dark and reduced-motion preferences. Link
+  opening uses Wayland activation tokens.
 - D-Bus session services provide desktop notifications and launcher progress.
   Notification actions can activate the terminal window.
 - Monstar launches new windows opened with `Ctrl+Shift+N` through the systemd
@@ -118,7 +119,7 @@ compositor does not support them.
 D-Bus is a build-time dependency of the default build (`libdbus-1` headers
 and library). Pass `-Ddbus=false` to drop it entirely, at the cost of desktop
 notifications, launcher progress, portal-based link/file opening (falls back
-to `xdg-open`), portal light/dark detection, and systemd cgroup isolation.
+to `xdg-open`), portal appearance detection, and systemd cgroup isolation.
 Nothing else is affected. `systemd` itself is never a build dependency; it is
 only used at runtime, over the session bus, when `linux-cgroup = always` is
 configured and a systemd user session is detected.
