@@ -196,9 +196,10 @@ and padding. Set `background-opacity-cells = true` to apply it to explicit cell
 background colors too. Monstar requests compositor-provided blur whenever the
 background is translucent; set `background-blur = false` to keep it clear.
 
-Leave `theme` unset to follow the desktop light/dark preference. Load bundled
-iTerm2 color schemes by name. Put custom themes in
-`$XDG_CONFIG_HOME/monstar/themes` or `~/.config/monstar/themes`.
+Leave `theme` unset to follow the desktop light/dark preference with Monstar's
+built-in Fluent 2 color schemes. Load bundled iTerm2 color schemes by name. Put
+custom themes in `$XDG_CONFIG_HOME/monstar/themes` or
+`~/.config/monstar/themes`.
 
 Set the default command for new windows. Commands run through `/bin/sh -c`
 unless prefixed with `direct:`:

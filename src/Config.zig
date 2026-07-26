@@ -738,6 +738,8 @@ test "built-in colors follow color scheme" {
     const light_colors = config.terminalColors(.light);
     try std.testing.expectEqual(light_theme.background, light_colors.background.get().?);
     try std.testing.expectEqual(light_theme.foreground, light_colors.foreground.get().?);
+    try std.testing.expectEqual(light_theme.foreground, light_theme.cursor_color);
+    try std.testing.expectEqual(light_theme.cursor_color, light_colors.cursor.get().?);
     try std.testing.expectEqual(light_theme.selection_background, config.effectiveSelectionBackground(.light));
     try std.testing.expectEqual(light_theme.selection_foreground, config.effectiveSelectionForeground(.light));
     try std.testing.expectEqual(light_theme.copy_highlight, config.effectiveCopyHighlight(.light));
@@ -746,6 +748,7 @@ test "built-in colors follow color scheme" {
     const dark_colors = config.terminalColors(.dark);
     try std.testing.expectEqual(dark_theme.background, dark_colors.background.get().?);
     try std.testing.expectEqual(dark_theme.foreground, dark_colors.foreground.get().?);
+    try std.testing.expectEqual(dark_theme.foreground, dark_theme.cursor_color);
     try std.testing.expectEqual(dark_theme.cursor_color, dark_colors.cursor.get().?);
     try std.testing.expectEqual(dark_theme.copy_highlight, config.effectiveCopyHighlight(.dark));
     try std.testing.expectEqual(dark_theme.copy_highlight_foreground, config.effectiveCopyHighlightForeground(.dark));

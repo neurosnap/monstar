@@ -210,7 +210,7 @@ directory relative to the Monstar executable.
 Monstar installs Ghostty's iTerm2 theme collection.
 Without a
 .B theme
-setting, the built-in Radix-based light and dark themes follow the desktop
+setting, the built-in Fluent 2-based light and dark themes follow the desktop
 color scheme.
 .SH COLOR SETTINGS
 Colors use six hexadecimal RGB digits, with an optional leading
@@ -228,29 +228,29 @@ until they are reset by the application.
 .BI background " = color"
 Set the default terminal background.
 Built-in defaults are
-.B #f0f0f3
+.B #ffffff
 in light mode and
-.B #212225
+.B #292929
 in dark mode.
 .TP
 .BI copy-highlight " = color"
 Set the temporary background shown after a selection is copied.
-The built-in default is Radix Yellow 9,
-.BR #ffe629 ,
+The built-in default is Fluent Yellow Tint 20,
+.BR #fdea3d ,
 in both color schemes.
 .TP
 .BI copy-highlight-foreground " = color"
 Set text shown during the post-copy flash.
 The built-in default is
-.B #1c2024
+.B #242424
 in both color schemes.
 .TP
 .BI cursor-color " = color"
 Set the cursor color.
 Built-in defaults are
-.B #1c2024
+.B #242424
 in light mode and
-.B #edeeef
+.B #ffffff
 in dark mode.
 .TP
 .BI cursor-text " = color"
@@ -260,9 +260,9 @@ When unset, the terminal background is used.
 .BI foreground " = color"
 Set the default terminal foreground.
 Built-in defaults are
-.B #1c2024
+.B #242424
 in light mode and
-.B #edeeef
+.B #ffffff
 in dark mode.
 .TP
 .BI palette " = index=color"
@@ -278,17 +278,17 @@ Repeat the setting to override multiple entries.
 .BI selection-background " = color"
 Set the selection background.
 Built-in defaults are
-.B #c2e5ff
+.B #cfe4fa
 in light mode and
-.B #104d87
+.B #0f6cbd
 in dark mode.
 .TP
 .BI selection-foreground " = color"
 Set selected text.
 Built-in defaults are
-.B #1c2024
+.B #242424
 in light mode and
-.B #edeeef
+.B #ffffff
 in dark mode.
 .SH THEME FILES
 Theme files use the same line syntax as the main configuration but accept only
