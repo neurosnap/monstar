@@ -11,13 +11,12 @@ pub fn build(b: *std.Build) void {
     // D-Bus backs session-bus notifications, xdg-desktop-portal link/file
     // opening, GTK theme-change signals, and systemd transient-scope cgroup
     // isolation. All of it already degrades gracefully at runtime when no
-    // session bus is present (see App.zig's dbus_connection handling), so
-    // this option lets minimal/embedded Wayland builds drop the libdbus-1
-    // headers and linkage entirely instead of just failing to connect.
+    // session bus is present, so minimal/embedded builds may compile the
+    // native client and its desktop integration out entirely.
     const enable_dbus = b.option(
         bool,
         "dbus",
-        "Enable D-Bus desktop integration: notifications, xdg-desktop-portal, systemd cgroup isolation (default: true)",
+        "Enable native D-Bus desktop integration: notifications, xdg-desktop-portal, systemd cgroup isolation (default: true)",
     ) orelse true;
 
     const scanner = Scanner.create(b, .{});
@@ -85,12 +84,6 @@ pub fn build(b: *std.Build) void {
     translate_c.linkSystemLibrary("freetype2", .{});
     translate_c.linkSystemLibrary("harfbuzz", .{});
     translate_c.linkSystemLibrary("xkbcommon", .{});
-    if (enable_dbus) {
-        translate_c.linkSystemLibrary("dbus-1", .{});
-        // Tells src/c.h to include dbus/dbus.h; kept out of the C translation
-        // unit entirely when disabled so libdbus-1's headers aren't required.
-        translate_c.defineCMacroRaw("MONSTAR_ENABLE_DBUS=1");
-    }
     root_module.addImport("c", translate_c.createModule());
 
     if (b.lazyDependency("z2d", .{

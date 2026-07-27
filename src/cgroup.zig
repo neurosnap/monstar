@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const linux = std.os.linux;
-const c = @import("c");
 const build_options = @import("build_options");
+const DbusConnection = @import("dbus/Connection.zig");
 
 const log = std.log.scoped(.cgroup);
 
@@ -29,7 +29,8 @@ pub fn systemdBooted() bool {
 /// `finish` (confirm the migration, then release the gated child) or
 /// `cancel` (abandon it on an error path).
 pub const Pending = struct {
-    call: if (build_options.enable_dbus) *c.DBusPendingCall else void,
+    connection: if (build_options.enable_dbus) *DbusConnection else void,
+    serial: if (build_options.enable_dbus) u32 else void,
     pid: u32,
 
     /// Wait for systemd's reply and for the pid migration to become
@@ -40,22 +41,20 @@ pub const Pending = struct {
     /// cgroup.
     pub fn finish(self: Pending) Error!void {
         if (!build_options.enable_dbus) return;
-        defer c.dbus_pending_call_unref(self.call);
-        c.dbus_pending_call_block(self.call);
-        const reply = c.dbus_pending_call_steal_reply(self.call) orelse
+        var reply = self.connection.waitForReply(self.serial, 1000) catch
             return error.ScopeFailed;
-        defer c.dbus_message_unref(reply);
+        defer reply.deinit();
 
         var name_buf: [scope_name_max + 1]u8 = undefined;
         const name = fmtScope(&name_buf, self.pid);
-        if (c.dbus_message_get_type(reply) == c.DBUS_MESSAGE_TYPE_ERROR) {
-            const error_name = c.dbus_message_get_error_name(reply);
+        if (reply.messageType() == .error_reply) {
             log.warn("StartTransientUnit {s} failed: {s}", .{
                 name,
-                if (error_name) |e| std.mem.span(e) else "unknown error",
+                reply.header.error_name orelse "unknown error",
             });
             return error.ScopeFailed;
         }
+        if (reply.messageType() != .method_return) return error.ScopeFailed;
 
         try waitForMigration(self.pid, name);
         log.debug("child {d} moved into {s}", .{ self.pid, name });
@@ -63,8 +62,9 @@ pub const Pending = struct {
 
     pub fn cancel(self: Pending) void {
         if (!build_options.enable_dbus) return;
-        c.dbus_pending_call_cancel(self.call);
-        c.dbus_pending_call_unref(self.call);
+        // Cancel is only used while unwinding App initialization, which closes
+        // the connection and discards the outstanding reply immediately.
+        _ = self;
     }
 };
 
@@ -72,11 +72,11 @@ pub const Pending = struct {
 /// waiting for the reply: the round trip to systemd and the cgroup
 /// migration proceed while the caller does other setup. Confirm with
 /// `Pending.finish` before releasing the gated child.
-pub fn startMoveIntoScope(connection: *c.DBusConnection, pid: u32) Error!Pending {
+pub fn startMoveIntoScope(connection: *DbusConnection, pid: u32) Error!Pending {
     var name_buf: [scope_name_max + 1]u8 = undefined;
     const name = fmtScope(&name_buf, pid);
-    const call = try startTransientUnit(connection, name, pid);
-    return .{ .call = call, .pid = pid };
+    const serial = try startTransientUnit(connection, name, pid);
+    return .{ .connection = connection, .serial = serial, .pid = pid };
 }
 
 /// Unit name for the child's scope. Follows the XDG cgroup naming
@@ -86,49 +86,35 @@ fn fmtScope(buf: []u8, pid: u32) [:0]const u8 {
     return std.fmt.bufPrintZ(buf, scope_prefix ++ "{d}" ++ scope_suffix, .{pid}) catch unreachable;
 }
 
-fn startTransientUnit(connection: *c.DBusConnection, name: [:0]const u8, pid: u32) Error!*c.DBusPendingCall {
-    const message = c.dbus_message_new_method_call(
-        "org.freedesktop.systemd1",
-        "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
-        "StartTransientUnit",
-    ) orelse return error.ScopeFailed;
-    defer c.dbus_message_unref(message);
-
-    var iter: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_init_append(message, &iter);
-
-    var name_ptr: [*:0]const u8 = name.ptr;
-    try appendBasic(&iter, c.DBUS_TYPE_STRING, &name_ptr);
+fn startTransientUnit(connection: *DbusConnection, name: [:0]const u8, pid: u32) Error!u32 {
+    var body: DbusConnection.Encoder = .init(connection.allocator);
+    defer body.deinit();
+    body.string(name) catch return error.ScopeFailed;
     // "fail" makes systemd error out if the unit already exists instead
     // of replacing it.
-    var mode: [*:0]const u8 = "fail";
-    try appendBasic(&iter, c.DBUS_TYPE_STRING, &mode);
+    body.string("fail") catch return error.ScopeFailed;
 
-    var props: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "(sv)", &props) == 0)
-        return error.ScopeFailed;
-    try appendPidsProperty(&props, pid);
+    const props = body.beginArray(8) catch return error.ScopeFailed;
+    appendPidsProperty(&body, pid) catch return error.ScopeFailed;
     // Let systemd-oomd kill this scope on memory pressure instead of an
     // ancestor cgroup that contains the terminal.
-    try appendStringProperty(&props, "ManagedOOMMemoryPressure", "kill");
-    if (c.dbus_message_iter_close_container(&iter, &props) == 0) return error.ScopeFailed;
+    appendStringProperty(&body, "ManagedOOMMemoryPressure", "kill") catch
+        return error.ScopeFailed;
+    body.endArray(props) catch return error.ScopeFailed;
 
     // Auxiliary units: unused, but the call signature requires the array.
-    var aux: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "(sa(sv))", &aux) == 0)
-        return error.ScopeFailed;
-    if (c.dbus_message_iter_close_container(&iter, &aux) == 0) return error.ScopeFailed;
+    const aux = body.beginArray(8) catch return error.ScopeFailed;
+    body.endArray(aux) catch return error.ScopeFailed;
 
     // Async send: the reply is collected later by Pending.finish. The
-    // flush pushes the request onto the socket now so systemd starts
-    // working while the caller continues setup.
-    var call: ?*c.DBusPendingCall = null;
-    if (c.dbus_connection_send_with_reply(connection, message, &call, 1000) == 0)
-        return error.ScopeFailed;
-    const pending = call orelse return error.ScopeFailed;
-    c.dbus_connection_flush(connection);
-    return pending;
+    // encoded message is written immediately, so systemd starts working
+    // while the caller continues setup.
+    return connection.sendMethod(.{
+        .destination = "org.freedesktop.systemd1",
+        .path = "/org/freedesktop/systemd1",
+        .interface = "org.freedesktop.systemd1.Manager",
+        .member = "StartTransientUnit",
+    }, "ssa(sv)a(sa(sv))", body.bytes(), &.{}) catch error.ScopeFailed;
 }
 
 /// StartTransientUnit's reply means the job is queued, not that the PID
@@ -184,44 +170,25 @@ fn leafCgroup(data: []const u8) ?[]const u8 {
     return null;
 }
 
-fn appendBasic(iter: *c.DBusMessageIter, type_: c_int, value: anytype) Error!void {
-    const opaque_value: *const anyopaque = @ptrCast(value);
-    if (c.dbus_message_iter_append_basic(iter, type_, opaque_value) == 0) return error.ScopeFailed;
-}
-
 /// ("PIDs", variant au [pid]): the process systemd adopts into the scope.
-fn appendPidsProperty(props: *c.DBusMessageIter, pid: u32) Error!void {
-    var entry: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(props, c.DBUS_TYPE_STRUCT, null, &entry) == 0)
-        return error.ScopeFailed;
-    var key: [*:0]const u8 = "PIDs";
-    try appendBasic(&entry, c.DBUS_TYPE_STRING, &key);
-    var variant: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&entry, c.DBUS_TYPE_VARIANT, "au", &variant) == 0)
-        return error.ScopeFailed;
-    var pids: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&variant, c.DBUS_TYPE_ARRAY, "u", &pids) == 0)
-        return error.ScopeFailed;
-    var pid_value: u32 = pid;
-    try appendBasic(&pids, c.DBUS_TYPE_UINT32, &pid_value);
-    if (c.dbus_message_iter_close_container(&variant, &pids) == 0) return error.ScopeFailed;
-    if (c.dbus_message_iter_close_container(&entry, &variant) == 0) return error.ScopeFailed;
-    if (c.dbus_message_iter_close_container(props, &entry) == 0) return error.ScopeFailed;
+fn appendPidsProperty(body: *DbusConnection.Encoder, pid: u32) !void {
+    try body.structAlignment();
+    try body.string("PIDs");
+    try body.variantSignature("au");
+    const pids = try body.beginArray(4);
+    try body.uint32(pid);
+    try body.endArray(pids);
 }
 
-fn appendStringProperty(props: *c.DBusMessageIter, name: [:0]const u8, value: [:0]const u8) Error!void {
-    var entry: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(props, c.DBUS_TYPE_STRUCT, null, &entry) == 0)
-        return error.ScopeFailed;
-    var name_ptr: [*:0]const u8 = name;
-    try appendBasic(&entry, c.DBUS_TYPE_STRING, &name_ptr);
-    var variant: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&entry, c.DBUS_TYPE_VARIANT, "s", &variant) == 0)
-        return error.ScopeFailed;
-    var value_ptr: [*:0]const u8 = value;
-    try appendBasic(&variant, c.DBUS_TYPE_STRING, &value_ptr);
-    if (c.dbus_message_iter_close_container(&entry, &variant) == 0) return error.ScopeFailed;
-    if (c.dbus_message_iter_close_container(props, &entry) == 0) return error.ScopeFailed;
+fn appendStringProperty(
+    body: *DbusConnection.Encoder,
+    name: []const u8,
+    value: []const u8,
+) !void {
+    try body.structAlignment();
+    try body.string(name);
+    try body.variantSignature("s");
+    try body.string(value);
 }
 
 test "fmtScope" {

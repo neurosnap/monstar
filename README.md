@@ -116,13 +116,14 @@ in its inherited cgroup. Link opening falls back to `xdg-open` when the portal
 is unavailable. Monstar disables optional Wayland protocols when the
 compositor does not support them.
 
-D-Bus is a build-time dependency of the default build (`libdbus-1` headers
-and library). Pass `-Ddbus=false` to drop it entirely, at the cost of desktop
-notifications, launcher progress, portal-based link/file opening (falls back
-to `xdg-open`), portal appearance detection, and systemd cgroup isolation.
-Nothing else is affected. `systemd` itself is never a build dependency; it is
-only used at runtime, over the session bus, when `linux-cgroup = always` is
-configured and a systemd user session is detected.
+Monstar speaks the required subset of the D-Bus wire protocol directly, so
+D-Bus is not a build or library dependency. Pass `-Ddbus=false` to compile the
+client out entirely, at the cost of desktop notifications, launcher progress,
+portal-based link/file opening (falls back to `xdg-open`), portal appearance
+detection, and systemd cgroup isolation. Nothing else is affected. `systemd`
+itself is never a build dependency; it is only used at runtime, over the
+session bus, when `linux-cgroup = always` is configured and a systemd user
+session is detected.
 
 ## Install
 
@@ -244,8 +245,8 @@ Middle-click to paste the primary selection.
 
 Building requires Zig 0.16, the Wayland 1.25 core schema,
 wayland-protocols 1.49, and development libraries for Wayland, Fontconfig,
-FreeType, HarfBuzz, xkbcommon, and D-Bus. Monstar negotiates protocol versions
-at runtime to support older compositors.
+FreeType, HarfBuzz, and xkbcommon. Monstar negotiates protocol versions at
+runtime to support older compositors.
 
 ```sh
 zig build

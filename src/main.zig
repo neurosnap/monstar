@@ -363,6 +363,7 @@ test {
     _ = Config;
     _ = Font;
     _ = @import("cgroup.zig");
+    _ = @import("dbus/Connection.zig");
     _ = @import("clipboard_format.zig");
     _ = @import("config_theme.zig");
     _ = @import("glyph_constraints.zig");

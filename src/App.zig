@@ -33,11 +33,12 @@ const ScrollbackSearch = @import("ScrollbackSearch.zig");
 const ScrollDetector = @import("ScrollDetector.zig");
 const TerminalLayout = @import("TerminalLayout.zig");
 const cgroup = @import("cgroup.zig");
+const DbusConnection = @import("dbus/Connection.zig");
 
 /// Type of the session-bus connection handle. Collapses to `void` when
 /// D-Bus support is compiled out (`-Ddbus=false`), so the `dbus` field
 /// below always has a valid, zero-cost type regardless of the option.
-const DbusHandle = if (build_options.enable_dbus) ?*c.DBusConnection else void;
+const DbusHandle = if (build_options.enable_dbus) ?DbusConnection else void;
 const no_dbus: DbusHandle = if (build_options.enable_dbus) null else {};
 const clipboard_format = @import("clipboard_format.zig");
 const Window = @import("Window.zig");
@@ -511,18 +512,14 @@ pub fn init(
     // in initDbus once the App has a stable address. With -Ddbus=false,
     // dbus_connection is always the sole `void` value and every dependent
     // feature below (notifications, portals, cgroup isolation) is inert.
-    const dbus_connection: DbusHandle = if (build_options.enable_dbus)
-        c.dbus_bus_get_private(c.DBUS_BUS_SESSION, null)
-    else
-        no_dbus;
-    if (build_options.enable_dbus) {
-        if (dbus_connection == null) log.warn("session dbus unavailable; desktop integration disabled", .{});
-    }
+    var dbus_connection: DbusHandle = if (build_options.enable_dbus) connection: {
+        break :connection DbusConnection.connectSession(io, alloc, environ) catch |err| {
+            log.warn("session dbus unavailable; desktop integration disabled: {}", .{err});
+            break :connection null;
+        };
+    } else no_dbus;
     errdefer if (build_options.enable_dbus) {
-        if (dbus_connection) |connection| {
-            c.dbus_connection_close(connection);
-            c.dbus_connection_unref(connection);
-        }
+        if (dbus_connection) |*connection| connection.deinit();
     };
 
     var pty: Pty = try .open(.{
@@ -551,7 +548,7 @@ pub fn init(
     var pending_scope: ?cgroup.Pending = null;
     if (build_options.enable_dbus) {
         if (use_cgroup_scope) {
-            pending_scope = cgroup.startMoveIntoScope(dbus_connection.?, @intCast(child_pid)) catch blk: {
+            pending_scope = cgroup.startMoveIntoScope(&dbus_connection.?, @intCast(child_pid)) catch blk: {
                 log.warn("cgroup isolation unavailable; child stays in our cgroup", .{});
                 break :blk null;
             };
@@ -899,27 +896,20 @@ fn reportTaskbarProgress(self: *App, report: vt.osc.Command.ProgressReport) void
 /// fork so that cgroup scope creation can use it.
 fn initDbus(self: *App) void {
     if (!build_options.enable_dbus) return;
-    const connection = self.dbus orelse return;
+    const connection = if (self.dbus != null) &self.dbus.? else return;
 
-    if (c.dbus_connection_add_filter(connection, dbusFilter, self, null) == 0) {
-        c.dbus_connection_close(connection);
-        c.dbus_connection_unref(connection);
+    connection.addMatch("type='signal',interface='org.freedesktop.Notifications'") catch {
+        connection.deinit();
         self.dbus = null;
         return;
-    }
-    c.dbus_bus_add_match(connection, "type='signal',interface='org.freedesktop.Notifications'", null);
-    c.dbus_bus_add_match(connection, "type='signal',interface='org.freedesktop.portal.Settings'", null);
-
-    var fd: c_int = -1;
-    if (c.dbus_connection_get_unix_fd(connection, &fd) == 0) {
-        c.dbus_connection_remove_filter(connection, dbusFilter, self);
-        c.dbus_connection_close(connection);
-        c.dbus_connection_unref(connection);
+    };
+    connection.addMatch("type='signal',interface='org.freedesktop.portal.Settings'") catch {
+        connection.deinit();
         self.dbus = null;
         return;
-    }
+    };
 
-    self.dbus_fd = fd;
+    self.dbus_fd = connection.getFd();
     self.readPortalAppearance();
 }
 
@@ -932,10 +922,8 @@ fn deinitDbus(self: *App) void {
     self.notifications.deinit(self.alloc);
 
     if (!build_options.enable_dbus) return;
-    if (self.dbus) |connection| {
-        c.dbus_connection_remove_filter(connection, dbusFilter, self);
-        c.dbus_connection_close(connection);
-        c.dbus_connection_unref(connection);
+    if (self.dbus) |*connection| {
+        connection.deinit();
         self.dbus = null;
         self.dbus_fd = -1;
     }
@@ -943,9 +931,23 @@ fn deinitDbus(self: *App) void {
 
 fn dispatchDbus(self: *App) void {
     if (!build_options.enable_dbus) return;
-    const connection = self.dbus orelse return;
-    _ = c.dbus_connection_read_write(connection, 0);
-    while (c.dbus_connection_dispatch(connection) == c.DBUS_DISPATCH_DATA_REMAINS) {}
+    const connection = if (self.dbus != null) &self.dbus.? else return;
+    while (connection.nextMessage() catch |err| {
+        log.warn("session dbus disconnected: {}", .{err});
+        connection.deinit();
+        self.dbus = null;
+        self.dbus_fd = -1;
+        return;
+    }) |message_value| {
+        var message = message_value;
+        defer message.deinit();
+        self.handleDbusMessage(&message);
+    }
+}
+
+fn hasQueuedDbusMessages(self: *const App) bool {
+    if (!build_options.enable_dbus) return false;
+    return if (self.dbus) |*connection| connection.hasQueuedMessages() else false;
 }
 
 fn readPortalAppearance(self: *App) void {
@@ -959,29 +961,28 @@ fn readPortalAppearance(self: *App) void {
 
 fn readPortalAppearanceUint32(self: *App, key: [*:0]const u8) ?u32 {
     if (!build_options.enable_dbus) return null;
-    const connection = self.dbus orelse return null;
+    const connection = if (self.dbus != null) &self.dbus.? else return null;
 
-    const message = c.dbus_message_new_method_call(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.Settings",
-        "ReadOne",
-    ) orelse return null;
-    defer c.dbus_message_unref(message);
+    var body: DbusConnection.Encoder = .init(self.alloc);
+    defer body.deinit();
+    body.string("org.freedesktop.appearance") catch return null;
+    body.string(std.mem.span(key)) catch return null;
 
-    var iter: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_init_append(message, &iter);
-    var namespace: [*:0]const u8 = "org.freedesktop.appearance";
-    dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &namespace) catch return null;
-    var key_ptr = key;
-    dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &key_ptr) catch return null;
-
-    const reply = c.dbus_connection_send_with_reply_and_block(connection, message, 1000, null) orelse return null;
-    defer c.dbus_message_unref(reply);
-
-    var reply_iter: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_init(reply, &reply_iter) == 0) return null;
-    return dbusVariantUint32(&reply_iter);
+    var reply = connection.call(.{
+        .destination = "org.freedesktop.portal.Desktop",
+        .path = "/org/freedesktop/portal/desktop",
+        .interface = "org.freedesktop.portal.Settings",
+        .member = "ReadOne",
+    }, "ss", body.bytes(), &.{}, 1000) catch return null;
+    defer reply.deinit();
+    if (reply.messageType() != .method_return or
+        !std.mem.eql(u8, reply.bodySignature(), "v")) return null;
+    var decoder = reply.bodyDecoder();
+    const signature = decoder.variantSignature() catch return null;
+    if (!std.mem.eql(u8, signature, "u")) return null;
+    const value = decoder.uint32() catch return null;
+    decoder.end() catch return null;
+    return value;
 }
 
 fn portalColorScheme(value: u32) vt.device_status.ColorScheme {
@@ -997,55 +998,39 @@ fn portalReducedMotion(value: u32) bool {
 
 fn sendDesktopNotification(self: *App, title: []const u8, body: []const u8) !void {
     if (!build_options.enable_dbus) return error.DBusUnavailable;
-    const connection = self.dbus orelse return error.DBusUnavailable;
+    const connection = if (self.dbus != null) &self.dbus.? else return error.DBusUnavailable;
 
-    const title_z = try self.alloc.dupeZ(u8, title);
-    defer self.alloc.free(title_z);
-    const body_z = try self.alloc.dupeZ(u8, body);
-    defer self.alloc.free(body_z);
+    var encoded: DbusConnection.Encoder = .init(self.alloc);
+    defer encoded.deinit();
+    try encoded.string(app_name);
+    try encoded.uint32(0); // replaces_id
+    try encoded.string(""); // app_icon
+    try encoded.string(title);
+    try encoded.string(body);
 
-    const message = c.dbus_message_new_method_call(
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-        "Notify",
-    ) orelse return error.OutOfMemory;
-    defer c.dbus_message_unref(message);
+    const actions = try encoded.beginArray(4);
+    try encoded.string("default");
+    try encoded.string("Open");
+    try encoded.endArray(actions);
 
-    var iter: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_init_append(message, &iter);
+    const hints = try encoded.beginArray(8);
+    try dbusAppendStringVariant(&encoded, "desktop-entry", self.config.app_id);
+    try encoded.endArray(hints);
+    try encoded.int32(-1); // server default expiration
 
-    var notify_app_name: [*:0]const u8 = app_name;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &notify_app_name);
-    var replaces_id: u32 = 0;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_UINT32, &replaces_id);
-    var app_icon: [*:0]const u8 = "";
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &app_icon);
-    var summary: [*:0]const u8 = title_z;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &summary);
-    var notification_body: [*:0]const u8 = body_z;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &notification_body);
-
-    var actions: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "s", &actions) == 0) return error.OutOfMemory;
-    var default_action_key: [*:0]const u8 = "default";
-    try dbusAppendBasic(&actions, c.DBUS_TYPE_STRING, &default_action_key);
-    var default_action_label: [*:0]const u8 = "Open";
-    try dbusAppendBasic(&actions, c.DBUS_TYPE_STRING, &default_action_label);
-    if (c.dbus_message_iter_close_container(&iter, &actions) == 0) return error.OutOfMemory;
-
-    var hints: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "{sv}", &hints) == 0) return error.OutOfMemory;
-    try dbusAppendStringVariant(&hints, "desktop-entry", self.config.app_id);
-    if (c.dbus_message_iter_close_container(&iter, &hints) == 0) return error.OutOfMemory;
-
-    var expire_timeout: i32 = -1;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_INT32, &expire_timeout);
-
-    const reply = c.dbus_connection_send_with_reply_and_block(connection, message, 1000, null) orelse return error.DBusUnavailable;
-    defer c.dbus_message_unref(reply);
-
-    const notification_id = dbusMessageUint32(reply) orelse return;
+    var reply = connection.call(.{
+        .destination = "org.freedesktop.Notifications",
+        .path = "/org/freedesktop/Notifications",
+        .interface = "org.freedesktop.Notifications",
+        .member = "Notify",
+    }, "susssasa{sv}i", encoded.bytes(), &.{}, 1000) catch
+        return error.DBusUnavailable;
+    defer reply.deinit();
+    if (reply.messageType() != .method_return or
+        !std.mem.eql(u8, reply.bodySignature(), "u")) return;
+    var decoder = reply.bodyDecoder();
+    const notification_id = decoder.uint32() catch return;
+    decoder.end() catch return;
     if (try self.notifications.fetchPut(self.alloc, notification_id, null)) |old| {
         if (old.value) |token| self.alloc.free(token);
     }
@@ -1053,34 +1038,27 @@ fn sendDesktopNotification(self: *App, title: []const u8, body: []const u8) !voi
 
 fn sendTaskbarProgress(self: *App, report: vt.osc.Command.ProgressReport) !void {
     if (!build_options.enable_dbus) return error.DBusUnavailable;
-    const connection = self.dbus orelse return error.DBusUnavailable;
+    const connection = if (self.dbus != null) &self.dbus.? else return error.DBusUnavailable;
 
-    const message = c.dbus_message_new_signal(
-        "/com/canonical/Unity/LauncherEntry",
-        "com.canonical.Unity.LauncherEntry",
-        "Update",
-    ) orelse return error.OutOfMemory;
-    defer c.dbus_message_unref(message);
+    var encoded: DbusConnection.Encoder = .init(self.alloc);
+    defer encoded.deinit();
+    const desktop_uri = try std.fmt.allocPrint(self.alloc, "application://{s}.desktop", .{self.config.app_id});
+    defer self.alloc.free(desktop_uri);
+    try encoded.string(desktop_uri);
 
-    var iter: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_init_append(message, &iter);
-    const desktop_uri_z = try std.fmt.allocPrintSentinel(self.alloc, "application://{s}.desktop", .{self.config.app_id}, 0);
-    defer self.alloc.free(desktop_uri_z);
-    var desktop_uri: [*:0]const u8 = desktop_uri_z;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &desktop_uri);
-
-    var properties: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "{sv}", &properties) == 0) return error.OutOfMemory;
+    const properties = try encoded.beginArray(8);
 
     const value = taskbarProgressValue(report);
     const visible = report.state != .remove;
-    try dbusAppendBoolVariant(&properties, "progress-visible", visible);
-    try dbusAppendDoubleVariant(&properties, "progress", value);
+    try dbusAppendBoolVariant(&encoded, "progress-visible", visible);
+    try dbusAppendDoubleVariant(&encoded, "progress", value);
+    try encoded.endArray(properties);
 
-    if (c.dbus_message_iter_close_container(&iter, &properties) == 0) return error.OutOfMemory;
-
-    if (c.dbus_connection_send(connection, message, null) == 0) return error.OutOfMemory;
-    c.dbus_connection_flush(connection);
+    try connection.sendSignal(.{
+        .path = "/com/canonical/Unity/LauncherEntry",
+        .interface = "com.canonical.Unity.LauncherEntry",
+        .member = "Update",
+    }, "sa{sv}", encoded.bytes());
 }
 
 fn taskbarProgressValue(report: vt.osc.Command.ProgressReport) f64 {
@@ -1095,45 +1073,35 @@ fn taskbarProgressValue(report: vt.osc.Command.ProgressReport) f64 {
 
 fn openUriPortal(self: *App, uri: []const u8, activation_token: ?[:0]const u8) !void {
     if (!build_options.enable_dbus) return error.PortalUnavailable;
-    const connection = self.dbus orelse return error.PortalUnavailable;
+    const connection = if (self.dbus != null) &self.dbus.? else return error.PortalUnavailable;
 
     // The portal's OpenURI method rejects file:// URIs by design; local
     // paths go through the fd-passing OpenFile/OpenDirectory methods.
     var arena_state: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena_state.deinit();
     if (try clipboard_format.osc7Path(arena_state.allocator(), uri)) |path| {
-        return openFilePortal(connection, path, activation_token);
+        return openFilePortal(self.alloc, connection, path, activation_token);
     }
 
-    const uri_z = try self.alloc.dupeZ(u8, uri);
-    defer self.alloc.free(uri_z);
+    var encoded: DbusConnection.Encoder = .init(self.alloc);
+    defer encoded.deinit();
+    try encoded.string(""); // parent window
+    try encoded.string(uri);
+    const options = try encoded.beginArray(8);
+    if (activation_token) |token| try dbusAppendStringVariant(&encoded, "activation_token", token);
+    try encoded.endArray(options);
 
-    const message = c.dbus_message_new_method_call(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.OpenURI",
-        "OpenURI",
-    ) orelse return error.OutOfMemory;
-    defer c.dbus_message_unref(message);
-
-    var iter: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_init_append(message, &iter);
-    var parent_window: [*:0]const u8 = "";
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &parent_window);
-    var uri_ptr: [*:0]const u8 = uri_z;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &uri_ptr);
-
-    var options: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "{sv}", &options) == 0) return error.OutOfMemory;
-    if (activation_token) |token| try dbusAppendStringVariant(&options, "activation_token", token);
-    if (c.dbus_message_iter_close_container(&iter, &options) == 0) return error.OutOfMemory;
-
-    try sendPortalCall(connection, message);
+    try sendPortalCall(connection, "OpenURI", "ssa{sv}", encoded.bytes(), &.{});
 }
 
 /// Open a local file or directory through the portal by passing an fd:
 /// files open with the default handler, directories in the file manager.
-fn openFilePortal(connection: *c.DBusConnection, path: [:0]const u8, activation_token: ?[:0]const u8) !void {
+fn openFilePortal(
+    alloc: std.mem.Allocator,
+    connection: *DbusConnection,
+    path: [:0]const u8,
+    activation_token: ?[:0]const u8,
+) !void {
     const linux = std.os.linux;
 
     // Directory-ness decides the portal method; O_DIRECTORY fails with
@@ -1156,52 +1124,48 @@ fn openFilePortal(connection: *c.DBusConnection, path: [:0]const u8, activation_
     }
     if (linux.errno(rc) != .SUCCESS) return error.OpenFailed;
     const fd: posix.fd_t = @intCast(rc);
-    // libdbus dups the fd when it is appended, so ours closes here.
+    // The descriptor stays open until sendmsg transfers it to the bus.
     defer _ = linux.close(fd);
 
-    const message = c.dbus_message_new_method_call(
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.OpenURI",
+    var encoded: DbusConnection.Encoder = .init(alloc);
+    defer encoded.deinit();
+    try encoded.string(""); // parent window
+    try encoded.unixFd(0);
+    const options = try encoded.beginArray(8);
+    if (activation_token) |token| try dbusAppendStringVariant(&encoded, "activation_token", token);
+    try encoded.endArray(options);
+
+    try sendPortalCall(
+        connection,
         if (is_dir) "OpenDirectory" else "OpenFile",
-    ) orelse return error.OutOfMemory;
-    defer c.dbus_message_unref(message);
-
-    var iter: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_init_append(message, &iter);
-    var parent_window: [*:0]const u8 = "";
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_STRING, &parent_window);
-    var fd_value: c_int = fd;
-    try dbusAppendBasic(&iter, c.DBUS_TYPE_UNIX_FD, &fd_value);
-
-    var options: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "{sv}", &options) == 0) return error.OutOfMemory;
-    if (activation_token) |token| try dbusAppendStringVariant(&options, "activation_token", token);
-    if (c.dbus_message_iter_close_container(&iter, &options) == 0) return error.OutOfMemory;
-
-    try sendPortalCall(connection, message);
+        "sha{sv}",
+        encoded.bytes(),
+        &.{fd},
+    );
 }
 
 /// Send a portal request while preserving the distinction between a portal
 /// that is absent and a request whose outcome is ambiguous. Falling back after
 /// a timeout could open the URI twice if the portal handles the request late.
-fn sendPortalCall(connection: *c.DBusConnection, message: *c.DBusMessage) !void {
-    var call: ?*c.DBusPendingCall = null;
-    if (c.dbus_connection_send_with_reply(connection, message, &call, 1000) == 0)
-        return error.OutOfMemory;
-    const pending = call orelse return error.DBusUnavailable;
-    defer c.dbus_pending_call_unref(pending);
+fn sendPortalCall(
+    connection: *DbusConnection,
+    member: []const u8,
+    signature: []const u8,
+    body: []const u8,
+    fds: []const posix.fd_t,
+) !void {
+    var reply = connection.call(.{
+        .destination = "org.freedesktop.portal.Desktop",
+        .path = "/org/freedesktop/portal/desktop",
+        .interface = "org.freedesktop.portal.OpenURI",
+        .member = member,
+    }, signature, body, fds, 1000) catch return error.DBusUnavailable;
+    defer reply.deinit();
 
-    c.dbus_pending_call_block(pending);
-    const reply = c.dbus_pending_call_steal_reply(pending) orelse
-        return error.DBusUnavailable;
-    defer c.dbus_message_unref(reply);
-
-    if (c.dbus_message_get_type(reply) != c.DBUS_MESSAGE_TYPE_ERROR) return;
-    const name = c.dbus_message_get_error_name(reply);
-    if (name != null and isPortalUnavailableErrorName(std.mem.span(name))) {
+    if (reply.messageType() != .error_reply) return;
+    if (reply.header.error_name) |name| if (isPortalUnavailableErrorName(name)) {
         return error.PortalUnavailable;
-    }
+    };
     return error.DBusUnavailable;
 }
 
@@ -1234,103 +1198,71 @@ test "only definitive portal errors enable fallback" {
     ));
 }
 
-fn dbusAppendBasic(iter: *c.DBusMessageIter, type_: c_int, value: anytype) !void {
-    const opaque_value: *const anyopaque = @ptrCast(value);
-    if (c.dbus_message_iter_append_basic(iter, type_, opaque_value) == 0) return error.OutOfMemory;
-}
-
-fn dbusAppendStringVariant(iter: *c.DBusMessageIter, key: [:0]const u8, value: [:0]const u8) !void {
-    var value_ptr: [*:0]const u8 = value;
-    try dbusAppendVariant(iter, key, "s", c.DBUS_TYPE_STRING, &value_ptr);
-}
-
-fn dbusAppendBoolVariant(iter: *c.DBusMessageIter, key: [:0]const u8, value: bool) !void {
-    var dbus_value: c.dbus_bool_t = if (value) 1 else 0;
-    try dbusAppendVariant(iter, key, "b", c.DBUS_TYPE_BOOLEAN, &dbus_value);
-}
-
-fn dbusAppendDoubleVariant(iter: *c.DBusMessageIter, key: [:0]const u8, value: f64) !void {
-    var dbus_value = value;
-    try dbusAppendVariant(iter, key, "d", c.DBUS_TYPE_DOUBLE, &dbus_value);
-}
-
-fn dbusAppendVariant(
-    iter: *c.DBusMessageIter,
-    key: [:0]const u8,
-    comptime signature: [:0]const u8,
-    type_: c_int,
-    value: anytype,
+fn dbusAppendStringVariant(
+    encoder: *DbusConnection.Encoder,
+    key: []const u8,
+    value: []const u8,
 ) !void {
-    var entry: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(iter, c.DBUS_TYPE_DICT_ENTRY, null, &entry) == 0) return error.OutOfMemory;
-    var key_ptr: [*:0]const u8 = key;
-    try dbusAppendBasic(&entry, c.DBUS_TYPE_STRING, &key_ptr);
-
-    var variant: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_open_container(&entry, c.DBUS_TYPE_VARIANT, signature, &variant) == 0) return error.OutOfMemory;
-    try dbusAppendBasic(&variant, type_, value);
-    if (c.dbus_message_iter_close_container(&entry, &variant) == 0) return error.OutOfMemory;
-
-    if (c.dbus_message_iter_close_container(iter, &entry) == 0) return error.OutOfMemory;
+    try encoder.dictEntryAlignment();
+    try encoder.string(key);
+    try encoder.variantSignature("s");
+    try encoder.string(value);
 }
 
-fn dbusMessageUint32(message: *c.DBusMessage) ?u32 {
-    var iter: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_init(message, &iter) == 0) return null;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_UINT32) return null;
-    var value: u32 = 0;
-    c.dbus_message_iter_get_basic(&iter, &value);
-    return value;
+fn dbusAppendBoolVariant(
+    encoder: *DbusConnection.Encoder,
+    key: []const u8,
+    value: bool,
+) !void {
+    try encoder.dictEntryAlignment();
+    try encoder.string(key);
+    try encoder.variantSignature("b");
+    try encoder.boolean(value);
 }
 
-fn dbusVariantUint32(iter: *c.DBusMessageIter) ?u32 {
-    if (c.dbus_message_iter_get_arg_type(iter) != c.DBUS_TYPE_VARIANT) return null;
-    var variant: c.DBusMessageIter = undefined;
-    c.dbus_message_iter_recurse(iter, &variant);
-    if (c.dbus_message_iter_get_arg_type(&variant) != c.DBUS_TYPE_UINT32) return null;
-    var value: u32 = 0;
-    c.dbus_message_iter_get_basic(&variant, &value);
-    return value;
+fn dbusAppendDoubleVariant(
+    encoder: *DbusConnection.Encoder,
+    key: []const u8,
+    value: f64,
+) !void {
+    try encoder.dictEntryAlignment();
+    try encoder.string(key);
+    try encoder.variantSignature("d");
+    try encoder.double(value);
 }
 
-fn dbusFilter(_: ?*c.DBusConnection, message: ?*c.DBusMessage, user_data: ?*anyopaque) callconv(.c) c.DBusHandlerResult {
-    const self: *App = @ptrCast(@alignCast(user_data orelse return c.DBUS_HANDLER_RESULT_NOT_YET_HANDLED));
-    const msg = message orelse return c.DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-
-    if (c.dbus_message_is_signal(msg, "org.freedesktop.Notifications", "ActivationToken") != 0) {
-        self.handleNotificationActivationToken(msg);
-        return c.DBUS_HANDLER_RESULT_HANDLED;
+fn handleDbusMessage(self: *App, message: *const DbusConnection.Message) void {
+    if (message.messageType() != .signal) return;
+    const interface = message.header.interface orelse return;
+    const member = message.header.member orelse return;
+    if (std.mem.eql(u8, interface, "org.freedesktop.Notifications")) {
+        if (std.mem.eql(u8, member, "ActivationToken")) {
+            self.handleNotificationActivationToken(message);
+        } else if (std.mem.eql(u8, member, "ActionInvoked")) {
+            self.handleNotificationActionInvoked(message);
+        }
+    } else if (std.mem.eql(u8, interface, "org.freedesktop.portal.Settings") and
+        std.mem.eql(u8, member, "SettingChanged"))
+    {
+        self.handlePortalSettingChanged(message);
     }
-    if (c.dbus_message_is_signal(msg, "org.freedesktop.Notifications", "ActionInvoked") != 0) {
-        self.handleNotificationActionInvoked(msg);
-        return c.DBUS_HANDLER_RESULT_HANDLED;
-    }
-    if (c.dbus_message_is_signal(msg, "org.freedesktop.portal.Settings", "SettingChanged") != 0) {
-        self.handlePortalSettingChanged(msg);
-        return c.DBUS_HANDLER_RESULT_HANDLED;
-    }
-    return c.DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
-fn handlePortalSettingChanged(self: *App, message: *c.DBusMessage) void {
-    var iter: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_init(message, &iter) == 0) return;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_STRING) return;
-    var namespace_ptr: [*:0]const u8 = undefined;
-    c.dbus_message_iter_get_basic(&iter, @ptrCast(&namespace_ptr));
-    if (!std.mem.eql(u8, std.mem.span(namespace_ptr), "org.freedesktop.appearance")) return;
+fn handlePortalSettingChanged(self: *App, message: *const DbusConnection.Message) void {
+    if (!std.mem.eql(u8, message.bodySignature(), "ssv")) return;
+    var decoder = message.bodyDecoder();
+    const namespace = decoder.string() catch return;
+    if (!std.mem.eql(u8, namespace, "org.freedesktop.appearance")) return;
 
-    if (c.dbus_message_iter_next(&iter) == 0) return;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_STRING) return;
-    var key_ptr: [*:0]const u8 = undefined;
-    c.dbus_message_iter_get_basic(&iter, @ptrCast(&key_ptr));
-    const key = std.mem.span(key_ptr);
+    const key = decoder.string() catch return;
     const color_scheme_changed = std.mem.eql(u8, key, "color-scheme");
     const reduced_motion_changed = std.mem.eql(u8, key, "reduced-motion");
     if (!color_scheme_changed and !reduced_motion_changed) return;
 
-    if (c.dbus_message_iter_next(&iter) == 0) return;
-    const value = dbusVariantUint32(&iter) orelse return;
+    const variant_signature = decoder.variantSignature() catch return;
+    if (!std.mem.eql(u8, variant_signature, "u")) return;
+    const value = decoder.uint32() catch return;
+    decoder.end() catch return;
     if (color_scheme_changed) {
         const color_scheme = portalColorScheme(value);
         if (self.color_scheme != color_scheme) self.setColorScheme(color_scheme, true);
@@ -1354,37 +1286,28 @@ fn setReducedMotion(self: *App, reduced_motion: bool) void {
     }
 }
 
-fn handleNotificationActivationToken(self: *App, message: *c.DBusMessage) void {
-    var iter: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_init(message, &iter) == 0) return;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_UINT32) return;
-    var notification_id: u32 = 0;
-    c.dbus_message_iter_get_basic(&iter, &notification_id);
+fn handleNotificationActivationToken(self: *App, message: *const DbusConnection.Message) void {
+    if (!std.mem.eql(u8, message.bodySignature(), "us")) return;
+    var decoder = message.bodyDecoder();
+    const notification_id = decoder.uint32() catch return;
     const token_slot = self.notifications.getPtr(notification_id) orelse return;
-    if (c.dbus_message_iter_next(&iter) == 0) return;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_STRING) return;
-    var token_ptr: [*:0]const u8 = undefined;
-    c.dbus_message_iter_get_basic(&iter, @ptrCast(&token_ptr));
+    const token = decoder.string() catch return;
+    decoder.end() catch return;
 
-    const token = std.mem.span(token_ptr);
     const owned = self.alloc.dupe(u8, token) catch return;
     if (token_slot.*) |old| self.alloc.free(old);
     token_slot.* = owned;
 }
 
-fn handleNotificationActionInvoked(self: *App, message: *c.DBusMessage) void {
-    var iter: c.DBusMessageIter = undefined;
-    if (c.dbus_message_iter_init(message, &iter) == 0) return;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_UINT32) return;
-    var notification_id: u32 = 0;
-    c.dbus_message_iter_get_basic(&iter, &notification_id);
+fn handleNotificationActionInvoked(self: *App, message: *const DbusConnection.Message) void {
+    if (!std.mem.eql(u8, message.bodySignature(), "us")) return;
+    var decoder = message.bodyDecoder();
+    const notification_id = decoder.uint32() catch return;
     const notification = self.notifications.fetchRemove(notification_id) orelse return;
     defer if (notification.value) |token| self.alloc.free(token);
-    if (c.dbus_message_iter_next(&iter) == 0) return;
-    if (c.dbus_message_iter_get_arg_type(&iter) != c.DBUS_TYPE_STRING) return;
-    var action_ptr: [*:0]const u8 = undefined;
-    c.dbus_message_iter_get_basic(&iter, @ptrCast(&action_ptr));
-    if (!std.mem.eql(u8, std.mem.span(action_ptr), "default")) return;
+    const action = decoder.string() catch return;
+    decoder.end() catch return;
+    if (!std.mem.eql(u8, action, "default")) return;
 
     const token = notification.value orelse return;
     if (token.len == 0) return;
@@ -1504,6 +1427,11 @@ pub fn run(self: *App) !void {
             if (display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
             self.window.flushPending();
         }
+        if (self.hasQueuedDbusMessages()) {
+            display.cancelRead();
+            self.dispatchDbus();
+            continue;
+        }
         // Pending Wayland callbacks can request a redraw while prepareRead
         // drains the local queue. Do that work before entering an infinite
         // poll, or it may remain stranded until an unrelated fd wakes us.
@@ -1585,7 +1513,9 @@ pub fn run(self: *App) !void {
             self.fireTaskbarProgressTimeout();
         }
 
-        if (dbus_fd.revents & (posix.POLL.IN | posix.POLL.HUP) != 0) {
+        if (dbus_fd.revents & (posix.POLL.IN | posix.POLL.HUP) != 0 or
+            self.hasQueuedDbusMessages())
+        {
             self.dispatchDbus();
         }
 
