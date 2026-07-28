@@ -1426,6 +1426,7 @@ pub fn run(self: *App) !void {
         while (!display.prepareRead()) {
             if (display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
             self.window.flushPending();
+            self.syncTerminalVisibility();
         }
         if (self.hasQueuedDbusMessages()) {
             display.cancelRead();
@@ -1469,6 +1470,7 @@ pub fn run(self: *App) !void {
         }
         if (display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
         self.window.flushPending();
+        self.syncTerminalVisibility();
 
         if (signal_fd.revents & posix.POLL.IN != 0) {
             try self.drainSignals();
@@ -3939,6 +3941,23 @@ fn setFocus(self: *App, focused: bool) void {
         vt.input.encodeFocus(&writer, if (focused) .gained else .lost) catch return;
         self.writePty(writer.buffered());
     }
+}
+
+/// Wayland's suspended toplevel state is positive knowledge that the view is
+/// hidden. Every other state remains conservatively potentially visible.
+fn syncTerminalVisibility(self: *App) void {
+    const visible = !self.window.suspended;
+    if (self.term.flags.visible == visible) return;
+    self.term.flags.visible = visible;
+    if (!self.term.modes.get(.report_visibility)) return;
+
+    var buf: [vt.device_status.max_visibility_report_encode_size]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    vt.device_status.encodeVisibilityReport(
+        &writer,
+        if (visible) .potentially_visible else .not_visible,
+    ) catch return;
+    self.writePty(writer.buffered());
 }
 
 fn textInputEvent(ctx: *anyopaque, event: zwp.TextInputV3.Event) void {
