@@ -13,6 +13,8 @@ const log = std.log.scoped(.keyboard);
 context: *c.xkb_context,
 keymap: ?*c.xkb_keymap,
 state: ?*c.xkb_state,
+compose_table: ?*c.xkb_compose_table,
+compose_state: ?*c.xkb_compose_state,
 mod_indices: ModIndices,
 mod_sides: ModSides,
 
@@ -40,20 +42,54 @@ const ModSides = struct {
 pub fn init() !Keyboard {
     const context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS) orelse
         return error.XkbInitFailed;
-    return .{
+    var keyboard: Keyboard = .{
         .context = context,
         .keymap = null,
         .state = null,
+        .compose_table = null,
+        .compose_state = null,
         .mod_indices = .{},
         .mod_sides = .{},
     };
+    keyboard.initCompose();
+    return keyboard;
 }
 
 pub fn deinit(self: *Keyboard) void {
+    if (self.compose_state) |state| c.xkb_compose_state_unref(state);
+    if (self.compose_table) |table| c.xkb_compose_table_unref(table);
     if (self.state) |state| c.xkb_state_unref(state);
     if (self.keymap) |keymap| c.xkb_keymap_unref(keymap);
     c.xkb_context_unref(self.context);
     self.* = undefined;
+}
+
+fn initCompose(self: *Keyboard) void {
+    const locale = composeLocale();
+    const table = c.xkb_compose_table_new_from_locale(
+        self.context,
+        locale,
+        c.XKB_COMPOSE_COMPILE_NO_FLAGS,
+    ) orelse {
+        log.warn("compose table unavailable for locale '{s}'", .{std.mem.span(locale)});
+        return;
+    };
+    const state = c.xkb_compose_state_new(table, c.XKB_COMPOSE_STATE_NO_FLAGS) orelse {
+        c.xkb_compose_table_unref(table);
+        log.warn("compose state creation failed", .{});
+        return;
+    };
+    self.compose_table = table;
+    self.compose_state = state;
+}
+
+fn composeLocale() [*:0]const u8 {
+    const names = [_][*:0]const u8{ "LC_ALL", "LC_CTYPE", "LANG" };
+    for (names) |name| {
+        const value = std.c.getenv(name) orelse continue;
+        if (value[0] != 0) return value;
+    }
+    return "C";
 }
 
 /// Load the keymap the compositor sent us (wl_keyboard.keymap event).
@@ -85,6 +121,7 @@ fn installKeymap(self: *Keyboard, keymap: *c.xkb_keymap) !void {
     if (self.keymap) |old| c.xkb_keymap_unref(old);
     self.keymap = keymap;
     self.state = state;
+    self.resetCompose();
     self.mod_sides = .{};
     self.mod_indices = .{
         .shift = c.xkb_keymap_mod_get_index(keymap, c.XKB_MOD_NAME_SHIFT),
@@ -108,6 +145,10 @@ pub fn updateMods(self: *Keyboard, depressed: u32, latched: u32, locked: u32, gr
     _ = c.xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
 }
 
+pub fn resetCompose(self: *Keyboard) void {
+    if (self.compose_state) |state| c.xkb_compose_state_reset(state);
+}
+
 /// Translate a wl_keyboard.key event into a ghostty-vt KeyEvent.
 /// `utf8_buf` backs the returned event's utf8 slice.
 pub fn translate(
@@ -126,8 +167,39 @@ pub fn translate(
     );
     self.updateModSides(key, action);
 
-    const utf8_len_c = c.xkb_state_key_get_utf8(state, keycode, utf8_buf.ptr, utf8_buf.len);
-    const utf8_len: usize = if (utf8_len_c > 0) @intCast(utf8_len_c) else 0;
+    var composing = false;
+    const utf8_len_c = utf8_len: {
+        if (self.compose_state) |compose_state| {
+            if (action == .press) {
+                _ = c.xkb_compose_state_feed(compose_state, keysym);
+            }
+            switch (c.xkb_compose_state_get_status(compose_state)) {
+                c.XKB_COMPOSE_COMPOSING => {
+                    composing = true;
+                    break :utf8_len 0;
+                },
+                c.XKB_COMPOSE_COMPOSED => {
+                    const len = c.xkb_compose_state_get_utf8(
+                        compose_state,
+                        utf8_buf.ptr,
+                        utf8_buf.len,
+                    );
+                    c.xkb_compose_state_reset(compose_state);
+                    break :utf8_len len;
+                },
+                c.XKB_COMPOSE_CANCELLED => {
+                    c.xkb_compose_state_reset(compose_state);
+                    break :utf8_len 0;
+                },
+                else => {},
+            }
+        }
+        break :utf8_len c.xkb_state_key_get_utf8(state, keycode, utf8_buf.ptr, utf8_buf.len);
+    };
+    const utf8_len: usize = if (utf8_len_c > 0 and utf8_len_c < utf8_buf.len)
+        @intCast(utf8_len_c)
+    else
+        0;
     // Don't send most control characters as text; the encoder derives
     // them from the resolved key. Plain Tab is the exception: ghostty-vt's
     // legacy encoder expects the tab byte in utf8 when no modifiers are held.
@@ -161,7 +233,7 @@ pub fn translate(
         .key = key,
         .mods = self.currentModsForKey(key, action),
         .consumed_mods = self.modsFromMask(consumed_mask),
-        .composing = false,
+        .composing = composing,
         .utf8 = utf8,
         .unshifted_codepoint = unshifted,
     };
@@ -598,6 +670,22 @@ fn testKeyboardWithOptions(options: [*:0]const u8) !Keyboard {
     return kb;
 }
 
+fn testKeyboardWithLayout(layout: [*:0]const u8) !Keyboard {
+    var kb: Keyboard = try .init();
+    errdefer kb.deinit();
+    const names: c.xkb_rule_names = .{
+        .rules = null,
+        .model = null,
+        .layout = layout,
+        .variant = null,
+        .options = null,
+    };
+    const keymap = c.xkb_keymap_new_from_names(kb.context, &names, c.XKB_KEYMAP_COMPILE_NO_FLAGS) orelse
+        return error.KeymapParseFailed;
+    try kb.installKeymap(keymap);
+    return kb;
+}
+
 test "xkb remaps functional keys but preserves physical writing keys" {
     try std.testing.expectEqual(vt.input.Key.escape, remapKey(.caps_lock, c.XKB_KEY_Escape));
     try std.testing.expectEqual(vt.input.Key.key_a, remapKey(.key_a, c.XKB_KEY_c));
@@ -671,6 +759,50 @@ test "Kitty protocol-only keysyms retain their functional code" {
         .kitty_flags = .{ .disambiguate = true },
     });
     try std.testing.expectEqualStrings("\x1b[57389u", writer.buffered());
+}
+
+test "translate and encode: Spanish Unicode and dead-key composition" {
+    var kb = testKeyboardWithLayout("es") catch return error.SkipZigTest;
+    defer kb.deinit();
+
+    var utf8_buf: [16]u8 = undefined;
+    var out_buf: [64]u8 = undefined;
+
+    // Spanish AC10 is a direct ñ key (evdev 39).
+    {
+        const event = kb.translate(&utf8_buf, 39, .press).?;
+        try std.testing.expect(!event.composing);
+        try std.testing.expectEqualStrings("ñ", event.utf8);
+
+        var writer: std.Io.Writer = .fixed(&out_buf);
+        try vt.input.encodeKey(&writer, event, .{});
+        try std.testing.expectEqualStrings("ñ", writer.buffered());
+    }
+
+    if (kb.compose_state == null) return error.SkipZigTest;
+
+    // Spanish AC11 is dead acute (evdev 40); followed by A it composes á.
+    {
+        const dead = kb.translate(&utf8_buf, 40, .press).?;
+        try std.testing.expect(dead.composing);
+        try std.testing.expectEqualStrings("", dead.utf8);
+
+        var dead_writer: std.Io.Writer = .fixed(&out_buf);
+        try vt.input.encodeKey(&dead_writer, dead, .{});
+        try std.testing.expectEqualStrings("", dead_writer.buffered());
+
+        const dead_release = kb.translate(&utf8_buf, 40, .release).?;
+        try std.testing.expect(dead_release.composing);
+        try std.testing.expectEqualStrings("", dead_release.utf8);
+
+        const event = kb.translate(&utf8_buf, 30, .press).?;
+        try std.testing.expect(!event.composing);
+        try std.testing.expectEqualStrings("á", event.utf8);
+
+        var writer: std.Io.Writer = .fixed(&out_buf);
+        try vt.input.encodeKey(&writer, event, .{});
+        try std.testing.expectEqualStrings("á", writer.buffered());
+    }
 }
 
 test "translate and encode: plain, shifted, control" {
