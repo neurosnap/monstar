@@ -58,7 +58,10 @@ pub fn acquire(
     errdefer self.entries.removeByPtr(gop.key_ptr);
     const entry = try alloc.create(Entry);
     errdefer alloc.destroy(entry);
-    entry.* = .{ .refs = 1, .data = try alloc.dupe(u8, image.data) };
+    entry.* = .{
+        .refs = 1,
+        .data = try alloc.dupe(u8, image.data.bytes() orelse return error.ImageDataPending),
+    };
     gop.value_ptr.* = entry;
     return entry.data;
 }
@@ -97,14 +100,14 @@ test "acquire shares copies by generation and sweep frees unpinned" {
         .width = 1,
         .height = 1,
         .format = .rgba,
-        .data = &.{ 1, 2, 3, 4 },
+        .data = .{ .complete = &.{ 1, 2, 3, 4 } },
         .generation = 1,
     };
 
     const a = try cache.acquire(alloc, image);
     const b = try cache.acquire(alloc, image);
     try std.testing.expectEqual(a.ptr, b.ptr);
-    try std.testing.expectEqualSlices(u8, image.data, a);
+    try std.testing.expectEqualSlices(u8, image.data.bytes().?, a);
     try std.testing.expectEqual(@as(u32, 1), cache.entries.count());
 
     var next = image;

@@ -715,9 +715,12 @@ pub fn init(
         .last_serial = 0,
         .clipboard = .init(alloc, window.data_manager, window.primary_manager),
     };
-    self.stream = .initAlloc(alloc, .{
-        .app = self,
-        .terminal_handler = .init(&self.term),
+    self.stream = .init(.{
+        .allocator = alloc,
+        .handler = .{
+            .app = self,
+            .terminal_handler = .init(&self.term),
+        },
     });
 
     // Handle sequences that need responses or side effects.
@@ -2613,7 +2616,7 @@ test "kitty PNG direct transmit installs decoded RGBA image" {
     try std.testing.expectEqual(.rgba, img.format);
     try std.testing.expect(img.width > 0);
     try std.testing.expect(img.height > 0);
-    try std.testing.expectEqual(@as(usize, img.width) * img.height * 4, img.data.len);
+    try std.testing.expectEqual(@as(usize, img.width) * img.height * 4, img.data.len());
     try std.testing.expectEqual(@as(usize, 1), term.screens.active.kitty_images.placements.count());
 }
 
@@ -3048,10 +3051,10 @@ fn detectHoveredLink(self: *App) !?HoveredLink {
 
     var offset: usize = 0;
     while (Link.find(text, offset)) |match| {
-        if (match.end > strmap.map.len) break;
+        if (match.end > strmap.map.count()) break;
         const selection: vt.Selection = .init(
-            strmap.map[match.start],
-            strmap.map[match.end - 1],
+            strmap.map.get(match.start).?,
+            strmap.map.get(match.end - 1).?,
             false,
         );
         if (selection.contains(screen, pin)) {

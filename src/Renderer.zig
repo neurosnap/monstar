@@ -858,7 +858,7 @@ fn renderKittyPlacement(
     image: KittyImage,
     viewport: KittyPlacementViewport,
 ) !void {
-    if (image.width == 0 or image.height == 0 or image.data.len == 0) return;
+    if (image.width == 0 or image.height == 0 or image.data.len() == 0) return;
 
     const dest_width = viewport.pixel_width;
     const dest_height = viewport.pixel_height;
@@ -954,7 +954,8 @@ fn blitKittyUnscaled(
         .png => return,
     };
     const expected_len = @as(usize, image.width) * image.height * channels;
-    if (image.data.len < expected_len) return;
+    const data = image.data.bytes() orelse return;
+    if (data.len < expected_len) return;
 
     const x_begin: i64 = @max(dest_x, 0);
     const y_begin: i64 = @max(dest_y, 0);
@@ -971,7 +972,7 @@ fn blitKittyUnscaled(
 
     for (0..rows) |row| {
         const src_off = ((src_y + row) * image.width + src_x) * channels;
-        const src = image.data[src_off..];
+        const src = data[src_off..];
         const dst = pixels[(dest_row + row) * stride + dest_col ..][0..cols];
         switch (image.format) {
             .rgb => copyOpaqueRgbSpan(dst, src[0 .. cols * 3]),
@@ -1052,7 +1053,8 @@ fn copyKittySourceRgba(
         .png => return false,
     };
     const expected_len = @as(usize, image.width) * image.height * channels;
-    if (image.data.len < expected_len) return false;
+    const data = image.data.bytes() orelse return false;
+    if (data.len < expected_len) return false;
 
     var out: usize = 0;
     for (0..viewport.source_height) |row| {
@@ -1062,30 +1064,30 @@ fn copyKittySourceRgba(
             const offset = (@as(usize, source_y) * image.width + source_x) * channels;
             switch (image.format) {
                 .gray => {
-                    const gray = image.data[offset];
+                    const gray = data[offset];
                     dst.*[out + 0] = gray;
                     dst.*[out + 1] = gray;
                     dst.*[out + 2] = gray;
                     dst.*[out + 3] = 0xff;
                 },
                 .gray_alpha => {
-                    const gray = image.data[offset];
+                    const gray = data[offset];
                     dst.*[out + 0] = gray;
                     dst.*[out + 1] = gray;
                     dst.*[out + 2] = gray;
-                    dst.*[out + 3] = image.data[offset + 1];
+                    dst.*[out + 3] = data[offset + 1];
                 },
                 .rgb => {
-                    dst.*[out + 0] = image.data[offset + 0];
-                    dst.*[out + 1] = image.data[offset + 1];
-                    dst.*[out + 2] = image.data[offset + 2];
+                    dst.*[out + 0] = data[offset + 0];
+                    dst.*[out + 1] = data[offset + 1];
+                    dst.*[out + 2] = data[offset + 2];
                     dst.*[out + 3] = 0xff;
                 },
                 .rgba => {
-                    dst.*[out + 0] = image.data[offset + 0];
-                    dst.*[out + 1] = image.data[offset + 1];
-                    dst.*[out + 2] = image.data[offset + 2];
-                    dst.*[out + 3] = image.data[offset + 3];
+                    dst.*[out + 0] = data[offset + 0];
+                    dst.*[out + 1] = data[offset + 1];
+                    dst.*[out + 2] = data[offset + 2];
+                    dst.*[out + 3] = data[offset + 3];
                 },
                 .png => unreachable,
             }
@@ -1699,10 +1701,10 @@ test "kitty unscaled blit converts rgb and clips" {
         .width = 2,
         .height = 2,
         .format = .rgb,
-        .data = &.{
+        .data = .{ .complete = &.{
             10, 20, 30, 40,  50,  60,
             70, 80, 90, 100, 110, 120,
-        },
+        } },
     };
     const viewport: KittyPlacementViewport = .{
         .viewport_col = 0,
@@ -1739,10 +1741,10 @@ test "kitty unscaled blit honors rgba alpha" {
         .width = 2,
         .height = 2,
         .format = .rgba,
-        .data = &.{
+        .data = .{ .complete = &.{
             200, 200, 200, 0,   200, 200, 200, 255,
             200, 200, 200, 128, 0,   0,   0,   255,
-        },
+        } },
     };
     const viewport: KittyPlacementViewport = .{
         .viewport_col = 0,
@@ -1780,10 +1782,10 @@ test "scaled kitty placement reuses cached rgba variant" {
         .width = 2,
         .height = 2,
         .format = .rgb,
-        .data = &.{
+        .data = .{ .complete = &.{
             10, 20, 30, 40,  50,  60,
             70, 80, 90, 100, 110, 120,
-        },
+        } },
         .generation = 3,
     };
     const viewport: KittyPlacementViewport = .{
@@ -2392,6 +2394,15 @@ test "render kitty image placement" {
         if (px == 0xffffffff) white_pixels += 1;
     }
     try std.testing.expect(white_pixels > 0);
+
+    // File and shared-memory loads may expose placements before their bytes
+    // arrive. They become renderable when the storage generation changes.
+    const pending = term.screens.active.kitty_images.images.getPtr(1).?;
+    pending.data.deinit(alloc);
+    pending.data = .{ .pending = 3 };
+    const pending_items = try collectKittyPlacements(&font, alloc, &term);
+    defer alloc.free(pending_items);
+    try std.testing.expectEqual(@as(usize, 0), pending_items.len);
 }
 
 test "render kitty unicode placeholder placement" {

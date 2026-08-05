@@ -54,6 +54,7 @@ pub fn collectKittyPlacements(
     var it = storage.placements.iterator();
     while (it.next()) |entry| {
         const image = storage.imageById(entry.key_ptr.image_id) orelse continue;
+        if (image.data.bytes() == null) continue;
         switch (entry.value_ptr.location) {
             .pin => {},
             .virtual => continue,
@@ -165,6 +166,7 @@ fn collectKittyVirtualPlacements(
     var it = vt.kitty.graphics.unicode.placementIterator(top, bot);
     while (it.next()) |virtual_placement| {
         const image = storage.imageById(virtual_placement.image_id) orelse continue;
+        if (image.data.bytes() == null) continue;
         const render_placement = virtual_placement.renderPlacement(
             storage,
             &image,
@@ -353,7 +355,7 @@ test "cullOccludedKittyItems drops placements under later opaque covers" {
                 .image_id = id,
                 .placement_id = 1,
                 .z = z,
-                .image = .{ .width = w, .height = h, .format = format, .data = &.{} },
+                .image = .{ .width = w, .height = h, .format = format },
                 .viewport = .{
                     .viewport_col = col,
                     .viewport_row = row,

@@ -73,7 +73,7 @@ pub fn replaceKitty(self: *AsyncJobSnapshot, alloc: std.mem.Allocator, cache: *K
     var acquired: usize = 0;
     errdefer for (items[0..acquired]) |item| cache.release(item.image.id, item.image.generation);
     for (items) |*item| {
-        item.image.data = try cache.acquire(alloc, item.image);
+        item.image.data = .{ .complete = try cache.acquire(alloc, item.image) };
         acquired += 1;
     }
     self.releaseKitty(alloc, cache);
