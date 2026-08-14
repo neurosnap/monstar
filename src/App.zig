@@ -3469,7 +3469,10 @@ fn beginPaste(self: *App, target: Clipboard.Target) void {
 }
 
 fn readClipboardTransfer(self: *App) void {
-    const event = self.clipboard.readTransfer() orelse return;
+    const event = self.clipboard.readTransfer() catch |err| {
+        log.warn("clipboard transfer failed: {}", .{err});
+        return;
+    } orelse return;
     defer self.clipboard.finishEvent();
     switch (event) {
         .terminal => |data| self.writeTerminalPaste(data),

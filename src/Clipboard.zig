@@ -179,7 +179,7 @@ pub fn init(
 }
 
 pub fn deinit(self: *Clipboard) void {
-    if (self.transfer_fd >= 0) _ = std.os.linux.close(self.transfer_fd);
+    self.abortTransfer();
     self.transfer_buf.deinit(self.alloc);
     if (self.clip_offer) |offer| offer.destroy();
     if (self.clip_pending_offer) |offer| offer.destroy();
@@ -237,15 +237,21 @@ pub fn transferFd(self: *const Clipboard) posix.fd_t {
 
 /// Returns null only when the nonblocking transfer needs more input. A
 /// returned event borrows the transfer buffer until `finishEvent` is called.
-pub fn readTransfer(self: *Clipboard) ?Event {
+pub fn readTransfer(self: *Clipboard) !?Event {
     var buf: [16 * 1024]u8 = undefined;
     while (true) {
         const n = posix.read(self.transfer_fd, &buf) catch |err| switch (err) {
             error.WouldBlock => return null,
-            else => break,
+            else => {
+                self.abortTransfer();
+                return err;
+            },
         };
         if (n == 0) break;
-        self.transfer_buf.appendSlice(self.alloc, buf[0..n]) catch break;
+        self.transfer_buf.appendSlice(self.alloc, buf[0..n]) catch |err| {
+            self.abortTransfer();
+            return err;
+        };
     }
 
     _ = std.os.linux.close(self.transfer_fd);
@@ -266,6 +272,17 @@ pub fn finishEvent(self: *Clipboard) void {
             if (offer.dnd_action.copy or offer.dnd_action.move) offer.offer.finish();
             offer.destroy();
         },
+        else => {},
+    }
+    self.transfer_buf.clearRetainingCapacity();
+    self.transfer_action = .terminal;
+}
+
+fn abortTransfer(self: *Clipboard) void {
+    if (self.transfer_fd >= 0) _ = std.os.linux.close(self.transfer_fd);
+    self.transfer_fd = -1;
+    switch (self.transfer_action) {
+        .dnd => |offer| offer.destroy(),
         else => {},
     }
     self.transfer_buf.clearRetainingCapacity();
@@ -499,4 +516,24 @@ fn setNonblocking(fd: posix.fd_t) void {
     const flags = linux.fcntl(fd, linux.F.GETFL, 0);
     if (linux.errno(flags) != .SUCCESS) return;
     _ = linux.fcntl(fd, linux.F.SETFL, flags | nonblock);
+}
+
+test "transfer read failure discards partial data" {
+    const linux = std.os.linux;
+    var clipboard: Clipboard = .init(std.testing.allocator, null, null);
+    defer clipboard.deinit();
+
+    try clipboard.transfer_buf.appendSlice(std.testing.allocator, "partial");
+    const rc = linux.openat(
+        linux.AT.FDCWD,
+        "/tmp",
+        .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .DIRECTORY = true },
+        0,
+    );
+    try std.testing.expectEqual(.SUCCESS, linux.errno(rc));
+    clipboard.transfer_fd = @intCast(rc);
+
+    try std.testing.expectError(error.IsDir, clipboard.readTransfer());
+    try std.testing.expectEqual(@as(posix.fd_t, -1), clipboard.transfer_fd);
+    try std.testing.expectEqual(@as(usize, 0), clipboard.transfer_buf.items.len);
 }
