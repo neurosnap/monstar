@@ -6,133 +6,26 @@
   </picture>
 </h1>
 
-Monstar is a terminal emulator for Linux and Wayland.
+Monstar is a Wayland terminal emulator built on libghostty.
 
 ## Features
 
-- Wayland windows, fractional scaling, text input (IME), clipboard, primary
-  selection, activation, and system bell support.
-- Desktop notifications and launcher progress over D-Bus.
-- Link and file opening through XDG desktop portals.
-- Optional systemd scopes for shell processes.
-- Kitty graphics, OSC 8 hyperlinks, URI detection, synchronized output, and
-  terminal color support.
-- Scrollback search while terminal output continues.
-- Fontconfig fonts, bundled color schemes, desktop light/dark preference,
-  padding, and background opacity settings.
-- Touchpad scrolling, separate precision and discrete wheel settings,
-  rectangular selection, link opening, and an overlay scrollbar that follows
-  the desktop reduced-motion preference.
-- Configuration reloads for most appearance and interaction settings.
-
-## Performance
-
-Reference distributions recorded on an Intel Core Ultra 7 258V. Lower is
-better. Results vary by workload.
-
-### Startup
-
-Launch-and-exit time over 100 fresh runs of `true`:
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./dist/benchmark-startup.svg">
-  <source media="(prefers-color-scheme: light)" srcset="./dist/benchmark-startup-light.svg">
-  <img alt="Box plots of terminal startup times. Monstar has the lowest median at 12.3 milliseconds." src="./dist/benchmark-startup-light.svg">
-</picture>
-
-### Keystroke latency
-
-Key event to echoed-frame commit over 200 injected keys:
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./dist/benchmark-latency.svg">
-  <source media="(prefers-color-scheme: light)" srcset="./dist/benchmark-latency-light.svg">
-  <img alt="Box plots of terminal keystroke latency. Monstar has the lowest median at 0.26 milliseconds." src="./dist/benchmark-latency-light.svg">
-</picture>
-
-### PTY throughput
-
-Sample-time distributions from eight vtebench workloads:
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./dist/benchmark-vtebench.svg">
-  <source media="(prefers-color-scheme: light)" srcset="./dist/benchmark-vtebench-light.svg">
-  <img alt="Grouped box plots comparing Monstar, foot, Ghostty, kitty, and Alacritty across eight vtebench workloads." src="./dist/benchmark-vtebench-light.svg">
-</picture>
-
-vtebench measures producer blocking and PTY read throughput, not frame
-presentation or input latency.
-
-<details>
-<summary>Benchmark methodology</summary>
-
-- Date: July 15, 2026.
-- Session: hardware-accelerated, headless Sway 1.12 at 2560×1440.
-- Renderer: GLES2 on the Intel GPU through `/dev/dri/renderD128`.
-- Process setup: empty configuration and a fresh process for each terminal.
-- Startup: measured with hyperfine 1.20.0 after 10 warmups. Commands were
-  `monstar -e true`, `foot true`, `ghostty -e true`, `kitty true`, and
-  `alacritty -e true`. The result covers the complete process lifetime, not
-  time to the first visible frame.
-- Keystroke latency: measured in 120×40 terminals under
-  `WAYLAND_DEBUG=client`. The test injected 200 keys with `wtype` at intervals
-  from 50 to 100 ms. A marked 20 ms raw-PTY echo delay was subtracted from each
-  sample to separate output commits from toolkit-only redraws. The result
-  includes client key handling, the PTY round trip, rendering, and buffer
-  commit. It excludes physical input, compositor presentation, and display
-  latency.
-- PTY throughput: measured with the default
-  [vtebench](https://github.com/alacritty/vtebench) suite at 120×40 cells. The
-  test used the standard 1 MiB minimum sample size and 10-second workload
-  limit. The result covers PTY reads, not frame rate, display latency, or
-  final-frame presentation.
-- Versions: Monstar 0.1.0 (`5b350e2`, `ReleaseFast`), foot 1.27.0,
-  Ghostty 1.3.2 tip (`c5a21ed`), kitty 0.47.4, and Alacritty 0.17.0.
-
-</details>
-
-## Linux integration
-
-- XDG desktop portals open links, local files, and directories. Portal
-  settings provide desktop light/dark and reduced-motion preferences. Link
-  opening uses Wayland activation tokens.
-- D-Bus session services provide desktop notifications and launcher progress.
-  Notification actions can activate the terminal window.
-- Monstar launches new windows opened with `Ctrl+Shift+N` through the systemd
-  user manager. Optional transient scopes place each shell process tree in a
-  separate scope.
-- Wayland protocols provide fractional scaling, text-input-v3 IME, cursor
-  shapes, clipboard and primary selection, server-side decorations, named app
-  icons, activation, system bell, and translucent background blur support.
-
-Enable a transient systemd scope for each newly spawned shell with:
-
-```conf
-linux-cgroup = always
-```
-
-If the session bus or systemd scope is unavailable, Monstar leaves the shell
-in its inherited cgroup. Link opening falls back to `xdg-open` when the portal
-is unavailable. Monstar disables optional Wayland protocols when the
-compositor does not support them.
-
-Monstar speaks the required subset of the D-Bus wire protocol directly, so
-D-Bus is not a build or library dependency. Pass `-Ddbus=false` to compile the
-client out entirely, at the cost of desktop notifications, launcher progress,
-portal-based link/file opening (falls back to `xdg-open`), portal appearance
-detection, and systemd cgroup isolation. Nothing else is affected. `systemd`
-itself is never a build dependency; it is only used at runtime, over the
-session bus, when `linux-cgroup = always` is configured and a systemd user
-session is detected.
+- Native Wayland with fractional scaling, IME (text-input-v3), activation, and background blur.
+- Kitty graphics, OSC 8 hyperlinks, automatic URI detection, and synchronized output.
+- Deep Linux integration: XDG desktop portals, D-Bus notifications, and optional systemd cgroups.
+- Non-blocking scrollback search and rectangular block selection.
+- Inertial touchpad scrolling with distinct precision/discrete wheel tuning.
+- Automatic desktop light/dark theme tracking, bundled color schemes, and live config reload.
 
 ## Install
 
+We maintain the [`monstar-bin` AUR package](https://aur.archlinux.org/packages/monstar-bin)
+which is automatically updated after we tag a release.
+
+We also attach binaries to GH Releases: https://github.com/rockorager/monstar/releases
+
 Install the current development version on Arch Linux from the
 [`monstar-git` AUR package](https://aur.archlinux.org/packages/monstar-git):
-
-```sh
-yay -S monstar-git
-```
 
 Build and install Monstar from source into `~/.local`:
 
@@ -211,6 +104,27 @@ command = fish --login
 # command = direct:fish --no-config
 ```
 
+Other settings:
+
+- **app-id** — Wayland app-id and desktop-entry hint for desktop integration
+  (default `dev.rockorager.monstar`).
+- **pipe-command-output** — Shell command that receives the last command's
+  output on stdin when `Ctrl+Shift+G` is pressed.
+- **scrollback-limit** — Terminal page storage in bytes, including the active
+  screen (default `50000000`).
+- **image-storage-limit** — Kitty graphics image storage in bytes per screen;
+  `0` disables the protocol (default `320000000`).
+- **inertial-scrolling** — Whether finger scrolling continues with inertial
+  motion after release (default `true`).
+- **copy-highlight-duration** — Post-copy selection flash in milliseconds;
+  `0` disables the flash (default `200`).
+- **background / foreground / cursor-color / cursor-text** — Terminal colors
+  as `#RRGGBB` or `RRGGBB`; explicit colors override the theme.
+- **selection-background / selection-foreground** — Selection colors.
+- **copy-highlight / copy-highlight-foreground** — Post-copy flash colors.
+- **palette** — Override one palette entry by index `0`–`255`; repeat the key
+  for more entries.
+
 Press `Ctrl+Shift+,` or send `SIGUSR1` to reload the configuration:
 
 ```sh
@@ -245,15 +159,118 @@ Hold `Shift` while dragging to select text after an application captures the
 mouse. Hold `Ctrl+Shift` instead of `Ctrl` to open a link in this state.
 Middle-click to paste the primary selection.
 
+## Linux integration
+
+- XDG desktop portals open links, local files, and directories. Portal
+  settings provide desktop light/dark and reduced-motion preferences. Link
+  opening uses Wayland activation tokens.
+- D-Bus session services provide desktop notifications and launcher progress.
+  Notification actions can activate the terminal window.
+- Monstar launches new windows opened with `Ctrl+Shift+N` through the systemd
+  user manager. Optional transient scopes place each shell process tree in a
+  separate scope.
+- Wayland protocols provide fractional scaling, text-input-v3 IME, cursor
+  shapes, clipboard and primary selection, server-side decorations, named app
+  icons, activation, system bell, and translucent background blur support.
+
+Enable a transient systemd scope for each newly spawned shell with:
+
+```conf
+linux-cgroup = always
+```
+
+If the session bus or systemd scope is unavailable, Monstar leaves the shell
+in its inherited cgroup. Link opening falls back to `xdg-open` when the portal
+is unavailable. Monstar disables optional Wayland protocols when the
+compositor does not support them.
+
+Monstar speaks the required subset of the D-Bus wire protocol directly, so
+D-Bus is not a build or library dependency. Pass `-Ddbus=false` to compile the
+client out entirely, at the cost of desktop notifications, launcher progress,
+portal-based link/file opening (falls back to `xdg-open`), portal appearance
+detection, and systemd cgroup isolation. Nothing else is affected. `systemd`
+itself is never a build dependency; it is only used at runtime, over the
+session bus, when `linux-cgroup = always` is configured and a systemd user
+session is detected.
+
+## Performance
+
+Reference distributions recorded on an Intel Core Ultra 7 258V. Lower is
+better. Results vary by workload.
+
+### Startup
+
+Launch-and-exit time over 100 fresh runs of `true`:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./dist/benchmark-startup.svg">
+  <source media="(prefers-color-scheme: light)" srcset="./dist/benchmark-startup-light.svg">
+  <img alt="Box plots of terminal startup times. Monstar has the lowest median at 12.3 milliseconds." src="./dist/benchmark-startup-light.svg">
+</picture>
+
+### Keystroke latency
+
+Key event to echoed-frame commit over 200 injected keys:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./dist/benchmark-latency.svg">
+  <source media="(prefers-color-scheme: light)" srcset="./dist/benchmark-latency-light.svg">
+  <img alt="Box plots of terminal keystroke latency. Monstar has the lowest median at 0.26 milliseconds." src="./dist/benchmark-latency-light.svg">
+</picture>
+
+### PTY throughput
+
+Sample-time distributions from eight vtebench workloads:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./dist/benchmark-vtebench.svg">
+  <source media="(prefers-color-scheme: light)" srcset="./dist/benchmark-vtebench-light.svg">
+  <img alt="Grouped box plots comparing Monstar, foot, Ghostty, kitty, and Alacritty across eight vtebench workloads." src="./dist/benchmark-vtebench-light.svg">
+</picture>
+
+vtebench measures producer blocking and PTY read throughput, not frame
+presentation or input latency.
+
+<details>
+<summary>Benchmark methodology</summary>
+
+- Date: July 15, 2026.
+- Session: hardware-accelerated, headless Sway 1.12 at 2560×1440.
+- Renderer: GLES2 on the Intel GPU through `/dev/dri/renderD128`.
+- Process setup: empty configuration and a fresh process for each terminal.
+- Startup: measured with hyperfine 1.20.0 after 10 warmups. Commands were
+  `monstar -e true`, `foot true`, `ghostty -e true`, `kitty true`, and
+  `alacritty -e true`. The result covers the complete process lifetime, not
+  time to the first visible frame.
+- Keystroke latency: measured in 120×40 terminals under
+  `WAYLAND_DEBUG=client`. The test injected 200 keys with `wtype` at intervals
+  from 50 to 100 ms. A marked 20 ms raw-PTY echo delay was subtracted from each
+  sample to separate output commits from toolkit-only redraws. The result
+  includes client key handling, the PTY round trip, rendering, and buffer
+  commit. It excludes physical input, compositor presentation, and display
+  latency.
+- PTY throughput: measured with the default
+  [vtebench](https://github.com/alacritty/vtebench) suite at 120×40 cells. The
+  test used the standard 1 MiB minimum sample size and 10-second workload
+  limit. The result covers PTY reads, not frame rate, display latency, or
+  final-frame presentation.
+- Versions: Monstar 0.1.0 (`5b350e2`, `ReleaseFast`), foot 1.27.0,
+  Ghostty 1.3.2 tip (`c5a21ed`), kitty 0.47.4, and Alacritty 0.17.0.
+
+</details>
+
 ## Development
 
-Building requires Zig 0.16, the Wayland 1.25 core schema,
-wayland-protocols 1.49, and development libraries for Wayland, Fontconfig,
-FreeType, HarfBuzz, and xkbcommon. Monstar negotiates protocol versions at
-runtime to support older compositors.
+Building requires:
+
+- Zig 0.16
+- Wayland 1.25 core schema
+- `wayland-protocols` 1.49
+- Dev libs for wayland, fontconfig, freeType, harfbuzz, and xkbcommon
+- Monstar negotiates protocol versions at runtime to support older compositors
 
 ```sh
 zig build
-zig build test
 zig build fmt
+zig build test
 ```
