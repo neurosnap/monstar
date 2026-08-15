@@ -50,10 +50,10 @@ pub fn osc7Path(arena: std.mem.Allocator, url: []const u8) std.mem.Allocator.Err
 
     if (uri.host) |host| {
         const h = try host.toRawMaybeAlloc(arena);
-        if (h.len > 0 and !std.mem.eql(u8, h, "localhost")) {
+        if (h.len > 0 and !std.ascii.eqlIgnoreCase(h, "localhost")) {
             var name_buf: [posix.HOST_NAME_MAX]u8 = undefined;
             const hostname = posix.gethostname(&name_buf) catch return null;
-            if (!std.mem.eql(u8, h, hostname)) return null;
+            if (!std.ascii.eqlIgnoreCase(h, hostname)) return null;
         }
     }
 
@@ -112,6 +112,10 @@ test "osc7Path decodes local file URIs" {
     try std.testing.expectEqualStrings(
         "/home/tim",
         (try osc7Path(arena, "file://localhost/home/tim")).?,
+    );
+    try std.testing.expectEqualStrings(
+        "/home/tim",
+        (try osc7Path(arena, "file://LOCALHOST/home/tim")).?,
     );
     try std.testing.expectEqualStrings(
         "/home/tim/my dir",
