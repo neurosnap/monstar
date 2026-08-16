@@ -49,13 +49,13 @@ jobs:
           protocols_version=1.49
           protocols_sha256=ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
 
-          curl --fail --location --silent --show-error \
+          curl --fail --location --silent --show-error --retry 5 --retry-delay 2 \
             --output "$RUNNER_TEMP/wayland.tar.xz" \
             "https://gitlab.freedesktop.org/wayland/wayland/-/releases/$wayland_version/downloads/wayland-$wayland_version.tar.xz"
           echo "$wayland_sha256  $RUNNER_TEMP/wayland.tar.xz" | sha256sum --check
           tar --directory "$RUNNER_TEMP" --extract --file "$RUNNER_TEMP/wayland.tar.xz"
 
-          curl --fail --location --silent --show-error \
+          curl --fail --location --silent --show-error --retry 5 --retry-delay 2 \
             --output "$RUNNER_TEMP/wayland-protocols.tar.xz" \
             "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/$protocols_version/downloads/wayland-protocols-$protocols_version.tar.xz"
           echo "$protocols_sha256  $RUNNER_TEMP/wayland-protocols.tar.xz" | sha256sum --check
