@@ -1583,7 +1583,21 @@ fn drainSignals(self: *App) !void {
         if (try Pty.tryWait(self.child_pid)) |status| {
             log.debug("child exited with status {d}", .{status});
             self.child_exited = true;
+            try self.finishChildOutput();
         }
+    }
+}
+
+/// Once wait4 confirms the session child is gone, join the gatherer, consume
+/// everything it published, then drain bytes it had not yet read from the
+/// nonblocking master before ending the session.
+fn finishChildOutput(self: *App) !void {
+    self.pipeline.stop();
+    try self.drainPipeline();
+    const consumed = try drainPtyTail(self.pty.master, &self.stream);
+    if (consumed) {
+        self.needs_redraw = true;
+        self.syncPtyOutput(true);
     }
 }
 
@@ -2093,12 +2107,31 @@ fn drainPipeline(self: *App) !void {
     }
     self.pipeline.rearm();
     if (self.pipeline.hasFailed()) return error.PtyReadFailed;
+    self.syncPtyOutput(consumed);
+}
+
+fn syncPtyOutput(self: *App, consumed: bool) void {
     self.syncInBandSizeReports();
     self.syncSynchronizedOutput();
     self.syncActiveScreen();
     self.syncScrollbarHover();
     if (consumed) self.refreshSearch();
     if (consumed) self.syncHoveredLink(true);
+}
+
+fn drainPtyTail(fd: posix.fd_t, stream: anytype) !bool {
+    var consumed = false;
+    var buf: [16 * 1024]u8 = undefined;
+    while (true) {
+        const n = posix.read(fd, &buf) catch |err| switch (err) {
+            error.WouldBlock => break,
+            else => return err,
+        };
+        if (n == 0) break;
+        stream.nextSlice(buf[0..n]);
+        consumed = true;
+    }
+    return consumed;
 }
 
 fn handleOscColorOperation(
@@ -5375,4 +5408,47 @@ test "search match mask includes every visible result" {
     try std.testing.expectEqualSlices(bool, &.{ true, true, true, false, true, true, true, false, false, false }, mask.items[0..10]);
     const no_matches = [_]bool{false} ** 10;
     try std.testing.expectEqualSlices(bool, &no_matches, mask.items[10..20]);
+}
+
+test "stopping the read pipeline preserves final PTY output" {
+    const Collector = struct {
+        bytes: [256]u8 = undefined,
+        len: usize = 0,
+
+        fn nextSlice(self: *@This(), value: []const u8) void {
+            @memcpy(self.bytes[self.len..][0..value.len], value);
+            self.len += value.len;
+        }
+    };
+
+    const linux = std.os.linux;
+    var pipe_fds: [2]posix.fd_t = undefined;
+    try std.testing.expectEqual(
+        .SUCCESS,
+        linux.errno(linux.pipe2(&pipe_fds, .{ .CLOEXEC = true, .NONBLOCK = true })),
+    );
+    defer _ = linux.close(pipe_fds[0]);
+    defer _ = linux.close(pipe_fds[1]);
+
+    var pipeline: ReadPipeline = try .init(pipe_fds[0]);
+    defer pipeline.deinit();
+    try pipeline.start();
+
+    const expected = "output written immediately before child exit";
+    const written = linux.write(pipe_fds[1], expected.ptr, expected.len);
+    try std.testing.expectEqual(.SUCCESS, linux.errno(written));
+    try std.testing.expectEqual(expected.len, written);
+
+    // Model the SIGCHLD path: stop may win before the gather thread reads,
+    // after it publishes, or between those points. Both stores are drained in
+    // order so none of the child's final bytes are lost.
+    pipeline.stop();
+    var collector: Collector = .{};
+    while (pipeline.take()) |batch| {
+        collector.nextSlice(batch);
+        pipeline.release();
+    }
+    _ = try drainPtyTail(pipe_fds[0], &collector);
+
+    try std.testing.expectEqualStrings(expected, collector.bytes[0..collector.len]);
 }
