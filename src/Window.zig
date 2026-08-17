@@ -28,6 +28,7 @@ wm_base: *xdg.WmBase,
 activation: ?*xdg.ActivationV1,
 activation_token: ?*xdg.ActivationTokenV1,
 activation_token_purpose: ?ActivationTokenPurpose,
+attention_token: ?*xdg.ActivationTokenV1,
 system_bell: ?*xdg.SystemBellV1,
 toplevel_icon_manager: ?*xdg.ToplevelIconManagerV1,
 background_effect_manager: ?*ext.BackgroundEffectManagerV1,
@@ -365,6 +366,7 @@ pub fn create(
         .activation = globals.activation,
         .activation_token = null,
         .activation_token_purpose = null,
+        .attention_token = null,
         .system_bell = globals.system_bell,
         .toplevel_icon_manager = globals.toplevel_icon_manager,
         .background_effect_manager = globals.background_effect_manager,
@@ -473,6 +475,7 @@ pub fn destroy(self: *Window) void {
     if (self.toplevel_decoration) |decoration| decoration.destroy();
     if (self.decoration_manager) |manager| manager.destroy();
     if (self.activation_token) |token| token.destroy();
+    if (self.attention_token) |token| token.destroy();
     if (self.activation) |activation| activation.destroy();
     if (self.system_bell) |bell| bell.destroy();
     if (self.toplevel_icon_manager) |manager| manager.destroy();
@@ -632,6 +635,21 @@ fn cancelActivationToken(self: *Window) void {
 pub fn activate(self: *Window, token: [:0]const u8) void {
     const activation = self.activation orelse return;
     activation.activate(token, self.surface);
+}
+
+/// Ask the compositor to activate this surface without claiming a triggering
+/// input event. The compositor may focus it, indicate urgency, or ignore it.
+/// Returns false when the activation protocol is unavailable.
+pub fn requestAttention(self: *Window) !bool {
+    const activation = self.activation orelse return false;
+    if (self.attention_token != null) return true;
+
+    const token = try activation.getActivationToken();
+    token.setSurface(self.surface);
+    token.setListener(*Window, attentionTokenListener, self);
+    token.commit();
+    self.attention_token = token;
+    return true;
 }
 
 /// Enable compositor text input for terminal content and commit `rect` as
@@ -1228,6 +1246,26 @@ fn activationTokenListener(
             switch (purpose) {
                 .activate_other => if (self.activation_token_fn) |callback| callback(self.render_ctx.?, std.mem.span(done.token)),
             }
+        },
+    }
+}
+
+fn attentionTokenListener(
+    token: *xdg.ActivationTokenV1,
+    event: xdg.ActivationTokenV1.Event,
+    self: *Window,
+) void {
+    const current_token = self.attention_token orelse return;
+    if (token.getId() != current_token.getId()) {
+        log.warn("received event for stale attention token", .{});
+        return;
+    }
+
+    switch (event) {
+        .done => |done| {
+            token.destroy();
+            self.attention_token = null;
+            self.activate(std.mem.span(done.token));
         },
     }
 }

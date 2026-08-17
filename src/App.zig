@@ -1314,12 +1314,20 @@ fn handleNotificationActionInvoked(self: *App, message: *const DbusConnection.Me
     decoder.end() catch return;
     if (!std.mem.eql(u8, action, "default")) return;
 
-    const token = notification.value orelse return;
-    if (token.len == 0) return;
+    if (notification.value) |token| {
+        if (token.len > 0) {
+            const token_z = self.alloc.dupeZ(u8, token) catch return;
+            defer self.alloc.free(token_z);
+            self.window.activate(token_z);
+            return;
+        }
+    }
 
-    const token_z = self.alloc.dupeZ(u8, token) catch return;
-    defer self.alloc.free(token_z);
-    self.window.activate(token_z);
+    const requested = self.window.requestAttention() catch |err| {
+        log.warn("failed to request attention after notification activation: {}", .{err});
+        return;
+    };
+    if (!requested) log.warn("cannot request attention: xdg-activation is unavailable", .{});
 }
 
 fn setNonblocking(fd: posix.fd_t) void {
