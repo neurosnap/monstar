@@ -869,6 +869,8 @@ fn effectBell(handler: *Handler) void {
 }
 
 fn showDesktopNotification(self: *App, title: []const u8, body: []const u8) void {
+    if (self.focused) return;
+
     const effective_title = if (title.len > 0)
         title
     else
