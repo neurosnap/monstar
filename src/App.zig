@@ -56,9 +56,13 @@ const HoveredLink = struct {
     range: ?Renderer.LinkRange,
 };
 
+const LinkAction = enum { open, copy };
+
 const LinkPress = struct {
     uri: []u8,
     cell: vt.Coordinate,
+    button: u32,
+    action: LinkAction,
 };
 
 alloc: std.mem.Allocator,
@@ -198,7 +202,7 @@ pointer_inside: bool,
 hovered_link: ?HoveredLink,
 link_checked_cell: ?vt.Coordinate,
 link_active: bool,
-/// A link click opens only if release occurs over the original cell.
+/// A link click acts only if release occurs over the original cell.
 link_press: ?LinkPress,
 /// Wheel state accumulated between pointer frame events.
 scroll_pixels: f64,
@@ -2839,13 +2843,13 @@ fn pointerEvent(ctx: *anyopaque, event: wl.Pointer.Event) void {
 
             if (button.button == 272) { // BTN_LEFT
                 if (button.state == .pressed) {
-                    if (self.armLinkPress()) {
+                    if (self.armLinkPress(button.button, .open)) {
                         self.syncScrollbarHover();
                         return;
                     }
                     self.cancelLinkPress();
                 }
-                if (button.state == .released and self.finishLinkPress()) {
+                if (button.state == .released and self.finishLinkPress(button.button)) {
                     self.syncScrollbarHover();
                     return;
                 }
@@ -2871,6 +2875,14 @@ fn pointerEvent(ctx: *anyopaque, event: wl.Pointer.Event) void {
                     else => {},
                 }
                 return;
+            }
+
+            if (button.button == 273) { // BTN_RIGHT
+                if (button.state == .pressed) {
+                    if (self.armLinkPress(button.button, .copy)) return;
+                    self.cancelLinkPress();
+                }
+                if (button.state == .released and self.finishLinkPress(button.button)) return;
             }
 
             if (reporting and mouse_button != null) {
@@ -3186,7 +3198,7 @@ fn hoveredLinkUri(self: *App) ?[]const u8 {
     return link.uri;
 }
 
-fn armLinkPress(self: *App) bool {
+fn armLinkPress(self: *App, button: u32, action: LinkAction) bool {
     const uri = self.hoveredLinkUri() orelse return false;
     const cell = self.linkCellAtPointer() orelse return false;
     const owned = self.alloc.dupe(u8, uri) catch |err| {
@@ -3194,7 +3206,7 @@ fn armLinkPress(self: *App) bool {
         return false;
     };
     if (self.link_press) |old| self.alloc.free(old.uri);
-    self.link_press = .{ .uri = owned, .cell = cell };
+    self.link_press = .{ .uri = owned, .cell = cell, .button = button, .action = action };
     return true;
 }
 
@@ -3203,8 +3215,9 @@ fn cancelLinkPress(self: *App) void {
     self.link_press = null;
 }
 
-fn finishLinkPress(self: *App) bool {
+fn finishLinkPress(self: *App, button: u32) bool {
     const press = self.link_press orelse return false;
+    if (press.button != button) return false;
     self.link_press = null;
     defer self.alloc.free(press.uri);
 
@@ -3213,9 +3226,20 @@ fn finishLinkPress(self: *App) bool {
     if (cell != null and uri != null and
         std.meta.eql(cell.?, press.cell) and std.mem.eql(u8, uri.?, press.uri))
     {
-        self.openUri(press.uri);
+        switch (press.action) {
+            .open => self.openUri(press.uri),
+            .copy => self.copyLink(press.uri),
+        }
     }
     return true;
+}
+
+fn copyLink(self: *App, uri: []const u8) void {
+    const text = clipboard_format.formatLinkCopy(self.alloc, uri) catch |err| {
+        log.warn("failed to format hyperlink for clipboard: {}", .{err});
+        return;
+    };
+    _ = self.clipboard.claim(.clipboard, text, self.last_serial);
 }
 
 fn openUri(self: *App, uri: []const u8) void {

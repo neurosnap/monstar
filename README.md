@@ -147,6 +147,7 @@ settings apply to new windows.
 | `Ctrl++` / `Ctrl+=` / `Ctrl+-` | Adjust the font size |
 | `Ctrl+0` | Reset the font size |
 | `Ctrl` + left click | Open a hyperlink or detected URI |
+| `Ctrl` + right click | Copy a hyperlink or detected URI |
 | `Ctrl` + drag | Make a rectangular selection |
 
 Scrollback search updates as you type. Press `Ctrl+N` and `Ctrl+P` to move
@@ -156,8 +157,8 @@ between matches. Press `Enter` to copy a match to the primary selection. Press
 Scrollback keybindings pass through to applications using the alternate screen.
 
 Hold `Shift` while dragging to select text after an application captures the
-mouse. Hold `Ctrl+Shift` instead of `Ctrl` to open a link in this state.
-Middle-click to paste the primary selection.
+mouse. Hold `Ctrl+Shift` instead of `Ctrl` to open or copy a link in this
+state. Middle-click to paste the primary selection.
 
 ## Linux integration
 

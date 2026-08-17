@@ -62,6 +62,16 @@ pub fn osc7Path(arena: std.mem.Allocator, url: []const u8) std.mem.Allocator.Err
     return try arena.dupeZ(u8, path);
 }
 
+/// Format a hyperlink for the clipboard, reducing local file URIs to paths.
+/// The caller owns the returned text.
+pub fn formatLinkCopy(alloc: std.mem.Allocator, url: []const u8) ![:0]u8 {
+    var arena_state: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_state.deinit();
+
+    const path = try osc7Path(arena_state.allocator(), url);
+    return alloc.dupeZ(u8, path orelse url);
+}
+
 pub fn formatUriListDrop(alloc: std.mem.Allocator, data: []const u8) ![]u8 {
     var arena_state: std.heap.ArenaAllocator = .init(alloc);
     defer arena_state.deinit();
@@ -127,6 +137,28 @@ test "osc7Path decodes local file URIs" {
     try std.testing.expectEqual(null, try osc7Path(arena, "https://example.com/x"));
     try std.testing.expectEqual(null, try osc7Path(arena, "not a uri"));
     try std.testing.expectEqual(null, try osc7Path(arena, "file://"));
+}
+
+test "formatLinkCopy reduces local file URIs and preserves other links" {
+    const local = try formatLinkCopy(std.testing.allocator, "file://localhost/home/tim/my%20dir");
+    defer std.testing.allocator.free(local);
+    try std.testing.expectEqualStrings("/home/tim/my dir", local);
+
+    var name_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+    const hostname = try posix.gethostname(&name_buf);
+    const local_url = try std.fmt.allocPrint(std.testing.allocator, "file://{s}/home/tim", .{hostname});
+    defer std.testing.allocator.free(local_url);
+    const actual_host = try formatLinkCopy(std.testing.allocator, local_url);
+    defer std.testing.allocator.free(actual_host);
+    try std.testing.expectEqualStrings("/home/tim", actual_host);
+
+    const remote = try formatLinkCopy(std.testing.allocator, "file://server.example/home/tim");
+    defer std.testing.allocator.free(remote);
+    try std.testing.expectEqualStrings("file://server.example/home/tim", remote);
+
+    const web = try formatLinkCopy(std.testing.allocator, "https://example.com/a%20b");
+    defer std.testing.allocator.free(web);
+    try std.testing.expectEqualStrings("https://example.com/a%20b", web);
 }
 
 test "formatUriListDrop shell quotes local file paths" {
