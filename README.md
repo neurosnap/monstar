@@ -193,6 +193,20 @@ itself is never a build dependency; it is only used at runtime, over the
 session bus, when `linux-cgroup = always` is configured and a systemd user
 session is detected.
 
+## Terminfo
+
+Monstar uses `TERM=xterm-ghostty` by default.
+
+If a remote server does not recognize `xterm-ghostty` over SSH, export the
+definition from your local machine:
+
+```
+infocmp -x xterm-ghostty | ssh YOUR-SERVER -- tic -x -
+```
+
+See [Ghostty's Terminfo](https://ghostty.org/docs/help/terminfo) docs for
+details.
+
 ## Performance
 
 Reference distributions recorded on an Intel Core Ultra 7 258V. Lower is
