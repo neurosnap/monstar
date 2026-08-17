@@ -27,6 +27,10 @@ build() {
   :
 }
 
+check() {
+  test -f "$srcdir/monstar-${pkgver}-x86_64-linux/share/terminfo/x/xterm-ghostty"
+}
+
 package() {
   cd "$srcdir/monstar-${pkgver}-x86_64-linux"
   mkdir -p "$pkgdir/usr"

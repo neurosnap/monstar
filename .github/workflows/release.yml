@@ -36,6 +36,7 @@ jobs:
             libharfbuzz-dev \
             libwayland-dev \
             libxkbcommon-dev \
+            ncurses-bin \
             pkg-config \
             xz-utils
 

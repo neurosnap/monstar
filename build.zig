@@ -103,8 +103,9 @@ pub fn build(b: *std.Build) void {
         const terminfo_files = b.addWriteFiles();
         _ = terminfo_files.addCopyFile(dep.path("src/terminfo/Source.zig"), "Source.zig");
         _ = terminfo_files.addCopyFile(dep.path("src/terminfo/ghostty.zig"), "ghostty.zig");
+        const terminfo_root = terminfo_files.addCopyFile(dep.path("src/terminfo/main.zig"), "main.zig");
         root_module.addImport("ghostty-terminfo", b.createModule(.{
-            .root_source_file = terminfo_files.addCopyFile(dep.path("src/terminfo/main.zig"), "main.zig"),
+            .root_source_file = terminfo_root,
             .target = target,
             .optimize = optimize,
         }));
@@ -113,6 +114,38 @@ pub fn build(b: *std.Build) void {
             ghostty_vt.import_table.get("uucode") orelse
                 @panic("ghostty-vt does not provide uucode"),
         );
+
+        const terminfo_gen = b.addExecutable(.{
+            .name = "monstar-terminfo-gen",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/terminfo_gen.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+            }),
+        });
+        terminfo_gen.root_module.addImport("ghostty-terminfo", b.createModule(.{
+            .root_source_file = terminfo_root,
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }));
+
+        const generate_terminfo = b.addRunArtifact(terminfo_gen);
+        const terminfo_source = generate_terminfo.captureStdOut(.{});
+        const compile_terminfo = std.Build.Step.Run.create(b, "compile terminfo");
+        compile_terminfo.addArgs(&.{ "tic", "-x", "-o" });
+        const terminfo_dir = compile_terminfo.addOutputFileArg("terminfo");
+        compile_terminfo.addFileArg(terminfo_source);
+        _ = compile_terminfo.captureStdErr(.{});
+
+        // Preserve tic's alias symlinks, which InstallDir does not yet copy.
+        const make_terminfo_dir = std.Build.Step.Run.create(b, "make terminfo install directory");
+        make_terminfo_dir.addArgs(&.{ "mkdir", "-p", b.getInstallPath(.prefix, "share/terminfo") });
+        const install_terminfo = std.Build.Step.Run.create(b, "install terminfo");
+        install_terminfo.addArgs(&.{ "cp", "-R" });
+        install_terminfo.addFileArg(terminfo_dir);
+        install_terminfo.addArg(b.getInstallPath(.prefix, "share"));
+        install_terminfo.step.dependOn(&make_terminfo_dir.step);
+        b.getInstallStep().dependOn(&install_terminfo.step);
     }
 
     const exe = b.addExecutable(.{
@@ -145,6 +178,10 @@ pub fn build(b: *std.Build) void {
     run_cmd.setEnvironmentVariable(
         "MONSTAR_RESOURCES_DIR",
         b.getInstallPath(.prefix, "share/monstar"),
+    );
+    run_cmd.setEnvironmentVariable(
+        "TERMINFO",
+        b.getInstallPath(.prefix, "share/terminfo"),
     );
     if (b.args) |args| {
         run_cmd.addArgs(args);

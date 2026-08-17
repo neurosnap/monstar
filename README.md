@@ -264,6 +264,7 @@ presentation or input latency.
 Building requires:
 
 - Zig 0.16
+- ncurses (`tic`)
 - Wayland 1.25 core schema
 - `wayland-protocols` 1.49
 - Dev libs for wayland, fontconfig, freeType, harfbuzz, and xkbcommon

@@ -31,7 +31,7 @@
             version = "1.0.1";
             src = self;
 
-            nativeBuildInputs = [ pkgs.zig pkgs.pkg-config ];
+            nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.ncurses ];
             buildInputs = buildInputs pkgs;
 
             zigDeps = pkgs.zig.fetchDeps {
@@ -42,6 +42,11 @@
 
             postConfigure = ''
               ln -s ${finalAttrs.zigDeps} "$ZIG_GLOBAL_CACHE_DIR/p"
+            '';
+
+            doInstallCheck = true;
+            installCheckPhase = ''
+              TERMINFO="$out/share/terminfo" infocmp -x xterm-ghostty >/dev/null
             '';
           });
         });
@@ -59,7 +64,7 @@
         in
         {
           default = pkgs.mkShell {
-            nativeBuildInputs = [ pkgs.zig pkgs.pkg-config ];
+            nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.ncurses ];
             buildInputs = buildInputs pkgs;
           };
         });

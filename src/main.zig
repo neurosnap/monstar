@@ -261,7 +261,7 @@ fn gui(init: std.process.Init, cli: CliOptions) !void {
     if (cli.working_directory) |cwd| try validateWorkingDirectory(cwd);
 
     const command = try buildCommand(arena, config, init.minimal.environ, cli.command_mode, cli.command);
-    const envp = try buildEnvp(arena, init.minimal.environ);
+    const envp = try buildEnvp(init.io, arena, init.minimal.environ);
 
     const app = try App.init(
         init.io,
@@ -336,19 +336,32 @@ fn validateWorkingDirectory(path: [:0]const u8) !void {
     _ = linux.close(@intCast(rc));
 }
 
-/// Build an envp block for the child: the inherited environment with
-/// TERM forced to Ghostty's terminfo entry for now.
+/// Build an envp block for the child with Monstar's terminal definition.
 fn buildEnvp(
+    io: std.Io,
     arena: std.mem.Allocator,
     environ: std.process.Environ,
 ) ![*:null]const ?[*:0]const u8 {
     var list: std.ArrayList(?[*:0]const u8) = .empty;
+    var has_terminfo = false;
     for (environ.block.slice) |entry| {
         const e = entry orelse continue;
-        if (std.mem.startsWith(u8, std.mem.span(e), "TERM=")) continue;
+        const value = std.mem.span(e);
+        if (std.mem.startsWith(u8, value, "TERM=")) continue;
+        if (std.mem.startsWith(u8, value, "TERMINFO=")) has_terminfo = true;
         try list.append(arena, e);
     }
     try list.append(arena, "TERM=xterm-ghostty");
+    if (!has_terminfo) {
+        var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.process.executableDirPath(io, &exe_dir_buf)) |len| {
+            const terminfo_dir = try std.fs.path.joinZ(arena, &.{ exe_dir_buf[0..len], "..", "share", "terminfo" });
+            const entry = try std.fs.path.joinZ(arena, &.{ terminfo_dir, "x", "xterm-ghostty" });
+            if (std.os.linux.errno(std.os.linux.access(entry, std.os.linux.R_OK)) == .SUCCESS) {
+                try list.append(arena, try std.mem.joinZ(arena, "", &.{ "TERMINFO=", terminfo_dir }));
+            }
+        } else |_| {}
+    }
     const slice = try list.toOwnedSliceSentinel(arena, null);
     return slice.ptr;
 }
