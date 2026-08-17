@@ -46,7 +46,7 @@
 
             doInstallCheck = true;
             installCheckPhase = ''
-              TERMINFO="$out/share/terminfo" infocmp -x xterm-ghostty >/dev/null
+              TERMINFO="$out/share/terminfo" infocmp -x monstar >/dev/null
             '';
           });
         });

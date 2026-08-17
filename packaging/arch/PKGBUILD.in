@@ -28,7 +28,7 @@ build() {
 }
 
 check() {
-  test -f "$srcdir/monstar-${pkgver}-x86_64-linux/share/terminfo/x/xterm-ghostty"
+  test -f "$srcdir/monstar-${pkgver}-x86_64-linux/share/terminfo/m/monstar"
 }
 
 package() {

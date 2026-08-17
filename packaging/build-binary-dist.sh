@@ -39,7 +39,7 @@ if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
 fi
 
 TERMINFO="$STAGING_DIR/${ARCHIVE_ROOT}/share/terminfo" \
-  infocmp -x xterm-ghostty >/dev/null
+  infocmp -x monstar >/dev/null
 
 echo "==> Creating release tarball dist/${TARBALL_NAME}..."
 tar -czf "dist/${TARBALL_NAME}" -C "$STAGING_DIR" "${ARCHIVE_ROOT}"

@@ -351,12 +351,12 @@ fn buildEnvp(
         if (std.mem.startsWith(u8, value, "TERMINFO=")) has_terminfo = true;
         try list.append(arena, e);
     }
-    try list.append(arena, "TERM=xterm-ghostty");
+    try list.append(arena, "TERM=monstar");
     if (!has_terminfo) {
         var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
         if (std.process.executableDirPath(io, &exe_dir_buf)) |len| {
             const terminfo_dir = try std.fs.path.joinZ(arena, &.{ exe_dir_buf[0..len], "..", "share", "terminfo" });
-            const entry = try std.fs.path.joinZ(arena, &.{ terminfo_dir, "x", "xterm-ghostty" });
+            const entry = try std.fs.path.joinZ(arena, &.{ terminfo_dir, "m", "monstar" });
             if (std.os.linux.errno(std.os.linux.access(entry, std.os.linux.R_OK)) == .SUCCESS) {
                 try list.append(arena, try std.mem.joinZ(arena, "", &.{ "TERMINFO=", terminfo_dir }));
             }
@@ -378,6 +378,7 @@ test {
     _ = @import("cgroup.zig");
     _ = @import("dbus/Connection.zig");
     _ = @import("clipboard_format.zig");
+    _ = @import("terminfo_gen.zig");
     _ = @import("config_theme.zig");
     _ = @import("glyph_constraints.zig");
     _ = @import("Keyboard.zig");

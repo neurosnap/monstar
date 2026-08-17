@@ -64,6 +64,9 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "enable_dbus", enable_dbus);
     root_module.addOptions("build_options", build_options);
+    root_module.addAnonymousImport("monstar-terminfo-source", .{
+        .root_source_file = b.path("dist/monstar.terminfo"),
+    });
     root_module.addImport("wayland", wayland_mod);
     root_module.linkSystemLibrary("wayland-client", .{});
     root_module.linkSystemLibrary("wayland-cursor", .{});

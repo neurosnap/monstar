@@ -196,13 +196,20 @@ session is detected.
 
 ## Terminfo
 
-Monstar uses `TERM=xterm-ghostty` by default.
+Monstar uses `TERM=monstar` by default.
 
-If a remote server does not recognize `xterm-ghostty` over SSH, export the
+If a remote server does not recognize `monstar` over SSH, send it the installed
 definition from your local machine:
 
 ```
-infocmp -x xterm-ghostty | ssh YOUR-SERVER -- tic -x -
+infocmp -x monstar | ssh YOUR-SERVER tic -x -
+```
+
+Alternatively, send the definition from the latest commit:
+
+```
+curl -fsSL https://raw.githubusercontent.com/rockorager/monstar/main/dist/monstar.terminfo \
+  | ssh YOUR-SERVER tic -x -
 ```
 
 See [Ghostty's Terminfo](https://ghostty.org/docs/help/terminfo) docs for
