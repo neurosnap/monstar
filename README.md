@@ -19,8 +19,9 @@ Monstar is a Wayland terminal emulator built on libghostty.
 
 ## Install
 
-We maintain the [`monstar-bin` AUR package](https://aur.archlinux.org/packages/monstar-bin)
-which is automatically updated after we tag a release.
+We maintain source-built [`monstar`](https://aur.archlinux.org/packages/monstar)
+and prebuilt [`monstar-bin`](https://aur.archlinux.org/packages/monstar-bin) AUR
+packages. Both are automatically updated after we tag a release.
 
 We also attach binaries to GH Releases: https://github.com/rockorager/monstar/releases
 

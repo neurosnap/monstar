@@ -108,5 +108,8 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
 
-      - name: Publish PKGBUILD to AUR
-        run: ./packaging/upload-aur.sh packaging/arch
+      - name: Publish PKGBUILDs to AUR
+        run: |
+          ./packaging/upload-aur.sh monstar-bin packaging/arch/PKGBUILD
+          ./packaging/upload-aur.sh monstar packaging/arch/PKGBUILD.source
+          ./packaging/upload-aur.sh monstar-git packaging/arch/PKGBUILD.git

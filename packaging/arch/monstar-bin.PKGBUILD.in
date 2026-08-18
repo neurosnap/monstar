@@ -9,16 +9,20 @@ license=('MIT')
 provides=('monstar')
 conflicts=('monstar')
 depends=(
-  'wayland'
+  'dbus'
   'fontconfig'
   'freetype2'
+  'glibc'
   'harfbuzz'
   'libxkbcommon'
-  'dbus'
+  'wayland'
 )
 optdepends=(
   'noto-fonts-emoji: emoji support'
   'noto-fonts-cjk: CJK font support'
+  'systemd: launch additional terminal windows'
+  'xdg-desktop-portal: open links and files through a desktop portal'
+  'xdg-utils: open links when a desktop portal is unavailable'
 )
 source=("monstar-@VERSION@-x86_64-linux.tar.gz::https://github.com/rockorager/monstar/releases/download/v@VERSION@/monstar-@VERSION@-x86_64-linux.tar.gz")
 sha256sums=('@SHA256@')

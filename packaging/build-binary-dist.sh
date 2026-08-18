@@ -20,11 +20,13 @@ ARCH="x86_64"
 OS="linux"
 
 TARBALL_NAME="monstar-${VERSION}-${ARCH}-${OS}.tar.gz"
+SOURCE_TARBALL_NAME="monstar-${VERSION}-source.tar.gz"
 STAGING_DIR="dist/staging"
 ARCHIVE_ROOT="monstar-${VERSION}-${ARCH}-${OS}"
 
 echo "==> Building pre-built release binary for monstar ${TAG} (version: ${VERSION})..."
-rm -rf "$STAGING_DIR" dist/monstar-*.tar.gz
+rm -rf "$STAGING_DIR" dist/monstar-*.tar.gz \
+  packaging/arch/PKGBUILD packaging/arch/PKGBUILD.source packaging/arch/PKGBUILD.git
 mkdir -p "$STAGING_DIR/${ARCHIVE_ROOT}"
 
 # Build stripped ReleaseFast release prefix
@@ -47,18 +49,32 @@ tar -czf "dist/${TARBALL_NAME}" -C "$STAGING_DIR" "${ARCHIVE_ROOT}"
 SHA256=$(sha256sum "dist/${TARBALL_NAME}" | cut -d' ' -f1)
 echo "==> Calculated SHA256 checksum: ${SHA256}"
 
-# Generate PKGBUILD from template
-echo "==> Generating packaging/arch/PKGBUILD from template..."
+# Create a controlled source archive instead of relying on GitHub's generated
+# repository archives, whose checksums are not release artifacts we own.
+echo "==> Creating source archive dist/${SOURCE_TARBALL_NAME}..."
+git archive \
+  --format=tar.gz \
+  --prefix="monstar-${VERSION}/" \
+  --output="dist/${SOURCE_TARBALL_NAME}" \
+  HEAD
+SOURCE_SHA256=$(sha256sum "dist/${SOURCE_TARBALL_NAME}" | cut -d' ' -f1)
+
+echo "==> Generating AUR PKGBUILDs..."
 sed "s/@VERSION@/${VERSION}/g; s/@SHA256@/${SHA256}/g" \
-  packaging/arch/PKGBUILD.in > packaging/arch/PKGBUILD
+  packaging/arch/monstar-bin.PKGBUILD.in > packaging/arch/PKGBUILD
+sed "s/@VERSION@/${VERSION}/g; s/@SHA256@/${SOURCE_SHA256}/g" \
+  packaging/arch/monstar.PKGBUILD.in > packaging/arch/PKGBUILD.source
+sed "s/@VERSION@/${VERSION}.r0/g" \
+  packaging/arch/monstar-git.PKGBUILD.in > packaging/arch/PKGBUILD.git
 
 
 # Stage all artifacts if ARTIFACTS_DIR is set
 if [ -n "${ARTIFACTS_DIR:-}" ]; then
   mkdir -p "$ARTIFACTS_DIR"
-  cp -f "dist/${TARBALL_NAME}"    "$ARTIFACTS_DIR/"
-  cp -f "packaging/arch/PKGBUILD" "$ARTIFACTS_DIR/"
-  echo "==> Staged artifacts in $ARTIFACTS_DIR: ${TARBALL_NAME}, PKGBUILD"
+  cp -f "dist/${TARBALL_NAME}" "dist/${SOURCE_TARBALL_NAME}" "$ARTIFACTS_DIR/"
+  cp -f packaging/arch/PKGBUILD packaging/arch/PKGBUILD.source \
+    packaging/arch/PKGBUILD.git "$ARTIFACTS_DIR/"
+  echo "==> Staged release archives and AUR PKGBUILDs in $ARTIFACTS_DIR"
 fi
 
-echo "✅ Pre-built binary distribution built for ${TAG} and SHA256 (${SHA256}) baked into package definitions."
+echo "✅ Release distributions and AUR PKGBUILDs built for ${TAG}."

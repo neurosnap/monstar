@@ -209,6 +209,18 @@ pub fn build(b: *std.Build) void {
 fn versionString(b: *std.Build) []const u8 {
     const release = b.fmt("{f}", .{release_version});
     var code: u8 = undefined;
+    const git_prefix_raw = b.runAllowFail(&.{
+        "git",
+        "-C",
+        b.build_root.path orelse ".",
+        "rev-parse",
+        "--show-prefix",
+    }, &code, .ignore) catch return release;
+    // Source archives can be unpacked inside another repository, as makepkg
+    // does in an AUR package checkout. Only use Git metadata when the build
+    // root is the root of that repository.
+    if (std.mem.trim(u8, git_prefix_raw, " \r\n").len != 0) return release;
+
     const raw = b.runAllowFail(&.{
         "git",
         "-C",

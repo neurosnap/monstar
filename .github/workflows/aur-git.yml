@@ -1,0 +1,41 @@
+name: AUR Development Package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/aur-git.yml'
+      - 'packaging/arch/monstar-git.PKGBUILD.in'
+      - 'packaging/upload-aur.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish monstar-git
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Generate PKGBUILD
+        run: |
+          VERSION=$(sed -n 's/^[[:space:]]*\.version = "\([^"]*\)",/\1/p' build.zig.zon | head -n1)
+          test -n "$VERSION"
+          sed "s/@VERSION@/${VERSION}.r0/g" \
+            packaging/arch/monstar-git.PKGBUILD.in > packaging/arch/PKGBUILD.git
+
+      - name: Setup SSH key for AUR
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+      - name: Add AUR to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Publish PKGBUILD to AUR
+        run: ./packaging/upload-aur.sh monstar-git packaging/arch/PKGBUILD.git
