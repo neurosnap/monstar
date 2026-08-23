@@ -215,6 +215,25 @@ monstar/
 }
 ```
 
+### D. Two-Way Client Event Notifications
+Monstar dispatches JSON-RPC 2.0 notifications back to connected clients over `$GTTY_SOCK`:
+- **`event.change`**: Emitted on real-time text input edits (powers instant fuzzy search/filtering):
+  ```json
+  {"jsonrpc":"2.0","method":"event.change","params":{"layer_id":"cmd_palette","widget_id":"search_input","value":"git "}}
+  ```
+- **`event.submit`**: Emitted on <kbd>Enter</kbd> or item click:
+  ```json
+  {"jsonrpc":"2.0","method":"event.submit","params":{"layer_id":"cmd_palette","selected_index":1,"value":"Git: Log Graph"}}
+  ```
+- **`event.click`**: Emitted when a button is triggered:
+  ```json
+  {"jsonrpc":"2.0","method":"event.click","params":{"layer_id":"confirm_dialog","widget_id":"confirm"}}
+  ```
+- **`event.dismiss`**: Emitted when a layer is closed on <kbd>Escape</kbd> or backdrop click:
+  ```json
+  {"jsonrpc":"2.0","method":"event.dismiss","params":{"layer_id":"confirm_dialog"}}
+  ```
+
 ---
 
 ## 6. Current Implementation State
@@ -222,38 +241,44 @@ monstar/
 | Component | Status | Details |
 | :--- | :--- | :--- |
 | **Compositor Engine** | **Completed** | Full scene graph, z-indexing, anchor geometry, and widget tree parser in [`src/compositor/`](file:///home/erock/dev/term/monstar/src/compositor/). |
-| **2D Software Rasterizer** | **Completed** | ARGB8888 pixel blitting, rounded borders, backdrop dimming, drop shadows in [`rasterizer.zig`](file:///home/erock/dev/term/monstar/src/compositor/rasterizer.zig) & [`blend.zig`](file:///home/erock/dev/term/monstar/src/compositor/blend.zig). |
-| **IPC Server** | **Completed** | Non-blocking Unix socket server at `/tmp/gtty_$PID.sock` with `GTTY_SOCK` exported to child shell in [`server.zig`](file:///home/erock/dev/term/monstar/src/compositor/server.zig). |
-| **Event Loop Integration** | **Completed** | Polling socket fd inside `App.run` pollset in [`src/App.zig`](file:///home/erock/dev/term/monstar/src/App.zig). |
-| **Wayland Frame Blit** | **Completed** | `comp.renderOverlays(...)` blitting into `wl_shm` pixel buffers right before `window.commitRender`. |
-| **Input Interception** | **Completed** | Modal overlay key interception and `Escape` dismissal in `onKey`. |
-| **Build & Tests** | **Passing** | Clean `zig build` and `zig build test` in Monstar. |
+| **2D Software Rasterizer** | **Completed** | ARGB8888 pixel blitting, rounded borders, backdrop dimming, drop shadows, dynamic title cutouts, and widgets in [`rasterizer.zig`](file:///home/erock/dev/term/monstar/src/compositor/rasterizer.zig) & [`blend.zig`](file:///home/erock/dev/term/monstar/src/compositor/blend.zig). |
+| **Interactive Widgets** | **Completed** | Single-line editable `input` widget with UTF-8 cursor navigation, `list` selection, `button` states, `table`, and `header`. |
+| **Epoll Socket Server** | **Completed** | Non-blocking Unix socket server at `/tmp/gtty_$PID.sock` with `epoll` multiplexing for persistent clients and event broadcasting in [`server.zig`](file:///home/erock/dev/term/monstar/src/compositor/server.zig). |
+| **Keyboard & Focus Navigation** | **Completed** | <kbd>Tab</kbd>/<kbd>Shift-Tab</kbd> focus cycling, <kbd>↑</kbd>/<kbd>↓</kbd> list navigation, <kbd>Enter</kbd> submit, and <kbd>Escape</kbd> dismiss in `scene.handleKeyEvent`. |
+| **Mouse & Pointer Hit-Testing** | **Completed** | Mouse clicks on list items, buttons, input fields, and backdrop dismissals in `scene.handlePointerClick`. |
+| **Command Palette Subsystem** | **Completed** | Built-in <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> palette with native action execution and interactive companion script [`scripts/command_palette.py`](file:///home/erock/dev/term/monstar/scripts/command_palette.py). |
+| **PTY Stream Isolation** | **Verified** | High-throughput concurrent PTY stream SHA-256 cryptographic tests pass with 0 byte drops and 0 escape leaks. |
+| **Open Specification** | **Published** | Complete *Open Terminal Compositing Protocol (OTCP) v1.0* draft in [`SPECIFICATION.md`](file:///home/erock/dev/term/monstar/SPECIFICATION.md). |
+| **Build & Tests** | **Passing** | All 152 unit and invariant tests passing cleanly in Monstar (`zig build test`). |
 
 ---
 
 ## 7. How to Run & Verify
 
-1. **Launch Monstar** (ensuring `WAYLAND_DISPLAY` is provided if not in default environment):
+1. **Launch Monstar**:
    ```bash
    WAYLAND_DISPLAY=wayland-1 ./zig-out/bin/monstar
    ```
 
-2. **Trigger Overlays via Demo Client**:
+2. **Launch Interactive Command Palette**:
    ```bash
-   # In another terminal or inside Monstar's shell:
-   python3 scripts/demo_overlay.py modal
-   python3 scripts/demo_overlay.py autocomplete
-   python3 scripts/demo_overlay.py clear
+   python3 scripts/command_palette.py
+   ```
+   *(Or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> for the built-in palette)*
+
+3. **Run PTY Isolation & Cryptographic Benchmark**:
+   ```bash
+   python3 scripts/validate_pty_isolation.py
    ```
 
 ---
 
-## 8. Next Enhancements
+## 8. Next Horizons
 
-1. **Interactive Widget Navigation**:
-   - Route `Tab`/`Shift-Tab`/arrow keys to change `focused` button / `selected_index` in active lists and tables.
-   - Return `{ "event": "widget.click", "id": "confirm" }` or `{ "event": "submit" }` notifications over the JSON-RPC socket.
+1. **Client SDKs & Standalone CLI Helpers**:
+   - Provide lightweight zero-dependency CLI utilities (`monstar-dialog`, `monstar-select`, `monstar-input`) for bash/zsh scripts.
+   - Publish client libraries in Rust, Go, Python, and C.
 2. **Smooth Animations**:
    - Add spring-physics / easing transitions for modal entry/exit and popup opacity fade-in.
-3. **Client SDKs**:
-   - Provide lightweight zero-dependency client bindings for Zig, Rust, Go, Python, and C to easily build surface-aware CLI tools and shell extensions.
+3. **Standardization & Emulator Porting**:
+   - Evangelize the Open Terminal Compositing Protocol (OTCP) to other terminal emulator maintainers (Ghostty, Foot, WezTerm, Alacritty, Kitty).
