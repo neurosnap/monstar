@@ -120,6 +120,7 @@ copy_highlight_active: bool,
 /// Configured text color beneath a focused block cursor.
 cursor_text: ?vt.color.RGB,
 compositor: ?Compositor,
+compositor_clean_frames: u8,
 window: *Window,
 keyboard: Keyboard,
 /// Terminal contents changed since the last committed frame.
@@ -635,6 +636,7 @@ pub fn init(
         .copy_highlight_active = false,
         .cursor_text = config.effectiveCursorText(.dark),
         .compositor = Compositor.init(alloc, @intCast(std.os.linux.getpid())) catch null,
+        .compositor_clean_frames = 0,
         .window = window,
         .keyboard = try .init(),
         .needs_redraw = true,
@@ -4773,11 +4775,14 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
         old_cursor = self.render_state.cursor;
         try self.render_state.update(self.alloc, &self.term);
         self.dirtyCursorRows(old_cursor);
-        // If terminal state (rather than the fade timer) removed the last
-        // overlay, redraw its old pixels instead of repairing from a buffer
-        // that still contains the thumb.
-        if (self.async_job.scrollbar != null and new_scrollbar == null) {
-            self.render_state.dirty = .full;
+        if (self.compositor) |*comp| {
+            if (comp.hasActiveOverlays()) {
+                self.render_state.dirty = .full;
+                self.compositor_clean_frames = 4;
+            } else if (self.compositor_clean_frames > 0) {
+                self.render_state.dirty = .full;
+                self.compositor_clean_frames -= 1;
+            }
         }
         if (self.render_state.dirty == .partial and self.allRenderRowsDirty()) {
             self.render_state.dirty = .full;

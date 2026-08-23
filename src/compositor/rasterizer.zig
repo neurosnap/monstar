@@ -70,22 +70,26 @@ pub fn drawChar(
     px: i32,
     py: i32,
     fg_col: u32,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
+    const cw = @max(1, cell_w);
+    const ch = @max(1, cell_h);
     var row: u16 = 0;
-    while (row < FONT_HEIGHT) : (row += 1) {
-        const target_y = py + @as(i32, @intCast(row));
-        if (target_y < 0 or target_y >= height) continue;
-
+    while (row < 16) : (row += 1) {
         const bits = getGlyphRowBits(cp, row);
-        var col: u16 = 0;
-        while (col < FONT_WIDTH) : (col += 1) {
-            const target_x = px + @as(i32, @intCast(col));
-            if (target_x < 0 or target_x >= width) continue;
+        if (bits == 0) continue;
 
+        const y0 = py + @as(i32, @intCast((@as(u32, row) * ch) / 16));
+        const y1 = py + @as(i32, @intCast((@as(u32, row + 1) * ch) / 16));
+
+        var col: u16 = 0;
+        while (col < 8) : (col += 1) {
             const bit_set = ((bits >> @intCast(7 - col)) & 1) != 0;
             if (bit_set) {
-                const idx = @as(usize, @intCast(target_y)) * @as(usize, stride) + @as(usize, @intCast(target_x));
-                pixels[idx] = fg_col;
+                const x0 = px + @as(i32, @intCast((@as(u32, col) * cw) / 8));
+                const x1 = px + @as(i32, @intCast((@as(u32, col + 1) * cw) / 8));
+                fillPixelRect(pixels, stride, width, height, x0, y0, @intCast(@max(1, x1 - x0)), @intCast(@max(1, y1 - y0)), fg_col);
             }
         }
     }
@@ -100,18 +104,20 @@ pub fn drawText(
     px: i32,
     py: i32,
     fg_col: u32,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
     var cur_x = px;
     if (std.unicode.Utf8View.init(text)) |view| {
         var it = view.iterator();
         while (it.nextCodepoint()) |cp| {
-            drawChar(pixels, stride, width, height, cp, cur_x, py, fg_col);
-            cur_x += @as(i32, @intCast(FONT_WIDTH));
+            drawChar(pixels, stride, width, height, cp, cur_x, py, fg_col, cell_w, cell_h);
+            cur_x += @as(i32, @intCast(cell_w));
         }
     } else |_| {
         for (text) |byte| {
-            drawChar(pixels, stride, width, height, byte, cur_x, py, fg_col);
-            cur_x += @as(i32, @intCast(FONT_WIDTH));
+            drawChar(pixels, stride, width, height, byte, cur_x, py, fg_col, cell_w, cell_h);
+            cur_x += @as(i32, @intCast(cell_w));
         }
     }
 }
@@ -125,6 +131,8 @@ pub fn drawBoxBorders(
     border: BorderType,
     border_color: u32,
     title: ?[]const u8,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
     if (border == .none or rect.width < 16 or rect.height < 16) return;
 
@@ -144,12 +152,12 @@ pub fn drawBoxBorders(
 
     // Title if present
     if (title) |t| {
-        const title_w = @as(u32, @intCast(t.len)) * FONT_WIDTH;
+        const title_w = @as(u32, @intCast(t.len)) * cell_w;
         if (title_w + 24 < rw) {
             const tx = rx + 16;
             // Erase behind title
-            fillPixelRect(pixels, stride, width, height, tx - 4, ry - 4, title_w + 8, FONT_HEIGHT, 0xff1e1e2e);
-            drawText(pixels, stride, width, height, t, tx, ry - 2, border_color);
+            fillPixelRect(pixels, stride, width, height, tx - 4, ry - 4, title_w + 8, cell_h, 0xff1e1e2e);
+            drawText(pixels, stride, width, height, t, tx, ry - 2, border_color, cell_w, cell_h);
         }
     }
 }
@@ -161,6 +169,8 @@ pub fn renderLayer(
     height: u31,
     layer: Layer,
     rect: Rect,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
     if (!layer.visible) return;
 
@@ -175,14 +185,14 @@ pub fn renderLayer(
 
     // 3. Borders & Title
     const border_col = if (layer.style.border_fg) |bfg| parseHexRgb(bfg) else 0xff89b4fa;
-    drawBoxBorders(pixels, stride, width, height, rect, layer.style.border, border_col, layer.style.title);
+    drawBoxBorders(pixels, stride, width, height, rect, layer.style.border, border_col, layer.style.title, cell_w, cell_h);
 
     // 4. Render children widgets
-    var cur_y: i32 = rect.y + 12;
+    var cur_y: i32 = rect.y + @as(i32, @intCast(cell_h / 2));
     for (layer.children) |w| {
-        cur_y += @as(i32, @intCast(w.margin_top)) * @as(i32, @intCast(FONT_HEIGHT));
-        renderWidget(pixels, stride, width, height, w, rect.x + 12, cur_y, rect.width - 24);
-        cur_y += @as(i32, @intCast(FONT_HEIGHT)) + 4 + @as(i32, @intCast(w.gap));
+        cur_y += @as(i32, @intCast(w.margin_top)) * @as(i32, @intCast(cell_h));
+        renderWidget(pixels, stride, width, height, w, rect.x + 12, cur_y, rect.width - 24, cell_w, cell_h);
+        cur_y += @as(i32, @intCast(cell_h)) + 4 + @as(i32, @intCast(w.gap));
     }
 }
 
@@ -195,6 +205,8 @@ fn renderWidget(
     wx: i32,
     wy: i32,
     avail_w: u32,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
     switch (w.type) {
         .text => {
@@ -202,18 +214,18 @@ fn renderWidget(
                 const fg = if (w.style.fg) |fg_str| parseHexRgb(fg_str) else 0xffcdd6f4;
                 var tx = wx;
                 if (w.@"align" == .center) {
-                    const txt_len_px = @as(u32, @intCast(t.len)) * FONT_WIDTH;
+                    const txt_len_px = @as(u32, @intCast(t.len)) * cell_w;
                     if (txt_len_px < avail_w) {
                         tx = wx + @as(i32, @intCast((avail_w - txt_len_px) / 2));
                     }
                 }
-                drawText(pixels, stride, width, height, t, tx, wy, fg);
+                drawText(pixels, stride, width, height, t, tx, wy, fg, cell_w, cell_h);
             }
         },
         .header => {
             if (w.title) |t| {
-                fillPixelRect(pixels, stride, width, height, wx - 4, wy - 2, avail_w + 8, FONT_HEIGHT + 4, 0xff89b4fa);
-                drawText(pixels, stride, width, height, t, wx + 4, wy, 0xff11111b);
+                fillPixelRect(pixels, stride, width, height, wx - 4, wy - 2, avail_w + 8, cell_h + 4, 0xff89b4fa);
+                drawText(pixels, stride, width, height, t, wx + 4, wy, 0xff11111b, cell_w, cell_h);
             }
         },
         .button => {
@@ -221,42 +233,41 @@ fn renderWidget(
                 const is_danger = if (w.variant) |v| std.mem.eql(u8, v, "danger") else false;
                 const btn_bg: u32 = if (w.focused) (if (is_danger) @as(u32, 0xfff38ba8) else @as(u32, 0xff89b4fa)) else @as(u32, 0xff313244);
                 const btn_fg: u32 = if (w.focused) 0xff11111b else 0xffcdd6f4;
-                const btn_w = @as(u32, @intCast(lbl.len + 4)) * FONT_WIDTH;
+                const btn_w = @as(u32, @intCast(lbl.len + 2)) * cell_w;
 
-                fillPixelRect(pixels, stride, width, height, wx, wy - 2, btn_w, FONT_HEIGHT + 4, btn_bg);
-                drawText(pixels, stride, width, height, lbl, wx + 8, wy, btn_fg);
+                fillPixelRect(pixels, stride, width, height, wx, wy - 2, btn_w, cell_h + 4, btn_bg);
+                drawText(pixels, stride, width, height, lbl, wx + @as(i32, @intCast(cell_w / 2)), wy, btn_fg, cell_w, cell_h);
             }
         },
         .box => {
             var child_x = wx;
             for (w.children) |child| {
-                renderWidget(pixels, stride, width, height, child, child_x, wy, avail_w);
-                child_x += 120 + @as(i32, @intCast(w.gap * FONT_WIDTH));
+                const child_w: i32 = if (child.label) |l| @intCast((l.len + 3) * cell_w) else @intCast(12 * cell_w);
+                renderWidget(pixels, stride, width, height, child, child_x, wy, avail_w, cell_w, cell_h);
+                child_x += child_w + @as(i32, @intCast(w.gap * cell_w));
             }
         },
         .table => {
             var row_y = wy;
-            // Draw headers
             var h_x = wx;
             for (w.headers) |h| {
-                drawText(pixels, stride, width, height, h, h_x, row_y, 0xffa6adc8);
-                h_x += 100;
+                drawText(pixels, stride, width, height, h, h_x, row_y, 0xffa6adc8, cell_w, cell_h);
+                h_x += @as(i32, @intCast(12 * cell_w));
             }
-            row_y += FONT_HEIGHT + 2;
+            row_y += @as(i32, @intCast(cell_h + 2));
 
-            // Draw rows
             for (w.rows, 0..) |row, r_idx| {
                 var c_x = wx;
                 const is_selected = (w.selected_index != null and w.selected_index.? == r_idx);
                 if (is_selected) {
-                    fillPixelRect(pixels, stride, width, height, wx - 4, row_y - 2, avail_w + 8, FONT_HEIGHT + 2, 0xff45475a);
+                    fillPixelRect(pixels, stride, width, height, wx - 4, row_y - 2, avail_w + 8, cell_h + 2, 0xff45475a);
                 }
                 const cell_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
                 for (row) |cell_txt| {
-                    drawText(pixels, stride, width, height, cell_txt, c_x, row_y, cell_fg);
-                    c_x += 100;
+                    drawText(pixels, stride, width, height, cell_txt, c_x, row_y, cell_fg, cell_w, cell_h);
+                    c_x += @as(i32, @intCast(12 * cell_w));
                 }
-                row_y += FONT_HEIGHT + 2;
+                row_y += @as(i32, @intCast(cell_h + 2));
             }
         },
         .list => {
@@ -264,11 +275,11 @@ fn renderWidget(
             for (w.items, 0..) |item, i_idx| {
                 const is_selected = (w.selected_index != null and w.selected_index.? == i_idx);
                 if (is_selected) {
-                    fillPixelRect(pixels, stride, width, height, wx - 4, item_y - 2, avail_w + 8, FONT_HEIGHT + 2, 0xff45475a);
+                    fillPixelRect(pixels, stride, width, height, wx - 4, item_y - 2, avail_w + 8, cell_h + 2, 0xff45475a);
                 }
                 const item_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
-                drawText(pixels, stride, width, height, item, wx, item_y, item_fg);
-                item_y += FONT_HEIGHT + 2;
+                drawText(pixels, stride, width, height, item, wx, item_y, item_fg, cell_w, cell_h);
+                item_y += @as(i32, @intCast(cell_h + 2));
             }
         },
         else => {},
@@ -294,7 +305,7 @@ fn getGlyphRowBits(cp: u21, row: u16) u8 {
         ',' => if (row == 12) 0b00011000 else if (row == 13) 0b00010000 else if (row == 14) 0b00100000 else 0,
         '-' => if (row == 8) 0b01111110 else 0,
         '.' => if (row == 12 or row == 13) 0b00011000 else 0,
-        '/' => if (row >= 3 and row <= 13) (@as(u8, 1) << @intCast(13 - row)) else 0,
+        '/' => if (row >= 6 and row <= 13) (@as(u8, 1) << @intCast(13 - row)) else 0,
         '0' => if (row == 4 or row == 12) 0b00111100 else if (row >= 5 and row <= 11) 0b01100110 else 0,
         '1' => if (row == 4) 0b00011000 else if (row == 5) 0b00111000 else if (row >= 6 and row <= 12) 0b00011000 else if (row == 13) 0b01111110 else 0,
         '2' => if (row == 4) 0b00111100 else if (row == 5 or row == 6) 0b01100110 else if (row == 7) 0b00000110 else if (row == 8) 0b00001100 else if (row == 9) 0b00011000 else if (row == 10) 0b00110000 else if (row == 11) 0b01100000 else if (row == 12 or row == 13) 0b01111110 else 0,
@@ -339,7 +350,7 @@ fn getGlyphRowBits(cp: u21, row: u16) u8 {
         'Y' => if (row >= 4 and row <= 7) 0b01100110 else if (row == 8) 0b00111100 else if (row >= 9 and row <= 13) 0b00011000 else 0,
         'Z' => if (row == 4 or row == 12 or row == 13) 0b01111110 else if (row == 5 or row == 6) 0b00001100 else if (row == 7 or row == 8) 0b00011000 else if (row >= 9 and row <= 11) 0b00110000 else 0,
         '[' => if (row == 3 or row == 13) 0b00111100 else if (row >= 4 and row <= 12) 0b00110000 else 0,
-        '\\' => if (row >= 3 and row <= 13) (@as(u8, 1) << @intCast(row - 3)) else 0,
+        '\\' => if (row >= 3 and row <= 10) (@as(u8, 1) << @intCast(row - 3)) else 0,
         ']' => if (row == 3 or row == 13) 0b00111100 else if (row >= 4 and row <= 12) 0b00001100 else 0,
         '^' => if (row == 4) 0b00011000 else if (row == 5) 0b00111100 else if (row == 6) 0b01100110 else 0,
         '_' => if (row == 14) 0b11111111 else 0,

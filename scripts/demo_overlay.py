@@ -16,10 +16,19 @@ def find_socket():
     if sock_path and os.path.exists(sock_path):
         return sock_path
     
-    # Fallback to scanning /tmp/gtty_*.sock
+    # Fallback to scanning /tmp/gtty_*.sock, newest first
     socks = glob.glob("/tmp/gtty_*.sock")
     if socks:
-        return socks[-1]
+        socks.sort(key=os.path.getmtime, reverse=True)
+        for s in socks:
+            try:
+                test_s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                test_s.settimeout(0.5)
+                test_s.connect(s)
+                test_s.close()
+                return s
+            except Exception:
+                continue
     return None
 
 def send_rpc(sock_path, msg):

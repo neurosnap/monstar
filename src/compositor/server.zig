@@ -10,10 +10,9 @@ pub const Server = struct {
     socket_path: [:0]const u8,
     server_fd: posix.fd_t,
     client_fds: std.ArrayList(posix.fd_t),
-    scene: *Scene,
     dirty: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, scene: *Scene, pid: i32) !Server {
+    pub fn init(allocator: std.mem.Allocator, pid: i32) !Server {
         var path_buf: [128]u8 = undefined;
         const sock_str = try std.fmt.bufPrint(&path_buf, "/tmp/gtty_{d}.sock", .{pid});
         const socket_path = try allocator.dupeZ(u8, sock_str);
@@ -46,7 +45,6 @@ pub const Server = struct {
             .socket_path = socket_path,
             .server_fd = socket_fd,
             .client_fds = .empty,
-            .scene = scene,
             .dirty = false,
         };
     }
@@ -61,9 +59,9 @@ pub const Server = struct {
         self.allocator.free(self.socket_path);
     }
 
-    pub fn pollEvents(self: *Server) bool {
+    pub fn pollEvents(self: *Server, scene: *Scene) bool {
         self.acceptNewClients();
-        self.readClientData();
+        self.readClientData(scene);
         const was_dirty = self.dirty;
         self.dirty = false;
         return was_dirty;
@@ -81,7 +79,7 @@ pub const Server = struct {
         }
     }
 
-    fn readClientData(self: *Server) void {
+    fn readClientData(self: *Server, scene: *Scene) void {
         var i: usize = 0;
         var buf: [8192]u8 = undefined;
 
@@ -101,12 +99,12 @@ pub const Server = struct {
                 continue;
             }
 
-            self.handleMessage(fd, buf[0..bytes_read]);
+            self.handleMessage(scene, fd, buf[0..bytes_read]);
             i += 1;
         }
     }
 
-    fn handleMessage(self: *Server, fd: posix.fd_t, raw_data: []const u8) void {
+    fn handleMessage(self: *Server, scene: *Scene, fd: posix.fd_t, raw_data: []const u8) void {
         var it = std.mem.splitScalar(u8, raw_data, '\n');
         while (it.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \r\t");
@@ -137,15 +135,16 @@ pub const Server = struct {
                         .object => |obj| obj.get("params") orelse root,
                         else => root,
                     };
-                    if (parser.parseLayerRender(self.allocator, params_val)) |layers| {
-                        self.scene.setLayers(layers) catch {};
+                    scene.clear();
+                    if (parser.parseLayerRender(scene.arena.allocator(), params_val)) |layers| {
+                        scene.setLayers(layers) catch {};
                         self.dirty = true;
                         self.sendSuccess(fd, id_num);
                     } else |_| {
                         self.sendError(fd, id_num, "Invalid layer.render params");
                     }
                 } else if (std.mem.eql(u8, method, "layer.clear") or std.mem.eql(u8, method, "surface.destroy")) {
-                    self.scene.clear();
+                    scene.clear();
                     self.dirty = true;
                     self.sendSuccess(fd, id_num);
                 } else {
