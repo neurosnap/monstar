@@ -13,6 +13,7 @@ const Pty = @import("Pty.zig");
 const Renderer = @import("Renderer.zig");
 const TerminalLayout = @import("TerminalLayout.zig");
 const Window = @import("Window.zig");
+pub const compositor = @import("compositor/Compositor.zig");
 
 const log = std.log.scoped(.main);
 
@@ -510,4 +511,8 @@ test "terminal emulation of simple output" {
     const text = try term.screens.active.dumpStringAlloc(alloc, .{ .viewport = .{} });
     defer alloc.free(text);
     try std.testing.expectEqualStrings("a\nb\nc", text);
+}
+
+test "compositor tests" {
+    std.testing.refAllDecls(compositor);
 }
