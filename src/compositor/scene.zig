@@ -33,13 +33,13 @@ pub const Scene = struct {
         return .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
-            .layers = std.ArrayList(Layer).init(allocator),
+            .layers = .empty,
         };
     }
 
     pub fn deinit(self: *Scene) void {
         self.arena.deinit();
-        self.layers.deinit();
+        self.layers.deinit(self.allocator);
     }
 
     pub fn clear(self: *Scene) void {
@@ -50,7 +50,7 @@ pub const Scene = struct {
 
     pub fn setLayers(self: *Scene, new_layers: []const Layer) !void {
         self.layers.clearRetainingCapacity();
-        try self.layers.appendSlice(new_layers);
+        try self.layers.appendSlice(self.allocator, new_layers);
 
         // Auto-find focused widget ID if present
         for (self.layers.items) |layer| {

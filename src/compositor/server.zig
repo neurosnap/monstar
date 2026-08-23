@@ -1,12 +1,13 @@
 const std = @import("std");
 const posix = std.posix;
+const linux = std.os.linux;
 const scene_mod = @import("scene.zig");
 const parser = @import("parser.zig");
 const Scene = scene_mod.Scene;
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
-    socket_path: []const u8,
+    socket_path: [:0]const u8,
     server_fd: posix.fd_t,
     client_fds: std.ArrayList(posix.fd_t),
     scene: *Scene,
@@ -15,23 +16,36 @@ pub const Server = struct {
     pub fn init(allocator: std.mem.Allocator, scene: *Scene, pid: i32) !Server {
         var path_buf: [128]u8 = undefined;
         const sock_str = try std.fmt.bufPrint(&path_buf, "/tmp/gtty_{d}.sock", .{pid});
-        const socket_path = try allocator.dupe(u8, sock_str);
+        const socket_path = try allocator.dupeZ(u8, sock_str);
 
         // Remove any stale socket
-        _ = posix.unlink(socket_path) catch {};
+        _ = linux.unlink(socket_path.ptr);
 
-        var addr = try std.net.Address.initUnix(socket_path);
-        const socket_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK, 0);
-        errdefer posix.close(socket_fd);
+        var un: posix.sockaddr.un = .{
+            .family = posix.AF.UNIX,
+            .path = [_]u8{0} ** 108,
+        };
+        const copy_len = @min(socket_path.len, un.path.len - 1);
+        @memcpy(un.path[0..copy_len], socket_path[0..copy_len]);
+        un.path[copy_len] = 0;
 
-        try posix.bind(socket_fd, &addr.any, addr.getOsSockLen());
-        try posix.listen(socket_fd, 16);
+        const sock_rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
+        if (linux.errno(sock_rc) != .SUCCESS) return error.SocketFailed;
+        const socket_fd: posix.fd_t = @intCast(sock_rc);
+        errdefer _ = linux.close(socket_fd);
+
+        const addr_len: posix.socklen_t = @intCast(@offsetOf(posix.sockaddr.un, "path") + copy_len + 1);
+        const bind_rc = linux.bind(socket_fd, @ptrCast(&un), addr_len);
+        if (linux.errno(bind_rc) != .SUCCESS) return error.BindFailed;
+
+        const listen_rc = linux.listen(socket_fd, 16);
+        if (linux.errno(listen_rc) != .SUCCESS) return error.ListenFailed;
 
         return Server{
             .allocator = allocator,
             .socket_path = socket_path,
             .server_fd = socket_fd,
-            .client_fds = std.ArrayList(posix.fd_t).init(allocator),
+            .client_fds = .empty,
             .scene = scene,
             .dirty = false,
         };
@@ -39,11 +53,11 @@ pub const Server = struct {
 
     pub fn deinit(self: *Server) void {
         for (self.client_fds.items) |cfd| {
-            posix.close(cfd);
+            _ = linux.close(cfd);
         }
-        self.client_fds.deinit();
-        posix.close(self.server_fd);
-        _ = posix.unlink(self.socket_path) catch {};
+        self.client_fds.deinit(self.allocator);
+        _ = linux.close(self.server_fd);
+        _ = linux.unlink(self.socket_path.ptr);
         self.allocator.free(self.socket_path);
     }
 
@@ -57,12 +71,11 @@ pub const Server = struct {
 
     fn acceptNewClients(self: *Server) void {
         while (true) {
-            const client_fd = posix.accept(self.server_fd, null, null, posix.SOCK.NONBLOCK) catch |err| switch (err) {
-                error.WouldBlock => break,
-                else => break,
-            };
-            self.client_fds.append(client_fd) catch {
-                posix.close(client_fd);
+            const client_rc = linux.accept4(self.server_fd, null, null, linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC);
+            if (linux.errno(client_rc) != .SUCCESS) break;
+            const client_fd: posix.fd_t = @intCast(client_rc);
+            self.client_fds.append(self.allocator, client_fd) catch {
+                _ = linux.close(client_fd);
                 break;
             };
         }
@@ -83,7 +96,7 @@ pub const Server = struct {
             };
 
             if (bytes_read == 0) {
-                posix.close(fd);
+                _ = linux.close(fd);
                 _ = self.client_fds.orderedRemove(i);
                 continue;
             }
@@ -147,22 +160,27 @@ pub const Server = struct {
     fn sendSuccess(self: *Server, fd: posix.fd_t, id: ?u64) void {
         _ = self;
         var resp_buf: [128]u8 = undefined;
-        const msg_str = if (id) |req_id|
-            std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"status\":\"ok\"}}}\n", .{req_id}) catch return
-        else
-            std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"result\":{{\"status\":\"ok\"}}}\n", .{}) catch return;
-
-        _ = posix.write(fd, msg_str) catch {};
+        if (id) |req_id| {
+            if (std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"status\":\"ok\"}}}}\n", .{req_id})) |msg_str| {
+                _ = linux.write(fd, msg_str.ptr, msg_str.len);
+            } else |_| {}
+        } else {
+            const static_msg = "{\"jsonrpc\":\"2.0\",\"result\":{\"status\":\"ok\"}}\n";
+            _ = linux.write(fd, static_msg.ptr, static_msg.len);
+        }
     }
 
     fn sendError(self: *Server, fd: posix.fd_t, id: ?u64, err_msg: []const u8) void {
         _ = self;
         var resp_buf: [256]u8 = undefined;
-        const msg_str = if (id) |req_id|
-            std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"message\":\"{s}\"}}}\n", .{ req_id, err_msg }) catch return
-        else
-            std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"error\":{{\"message\":\"{s}\"}}}\n", .{err_msg}) catch return;
-
-        _ = posix.write(fd, msg_str) catch {};
+        if (id) |req_id| {
+            if (std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"message\":\"{s}\"}}}}\n", .{ req_id, err_msg })) |msg_str| {
+                _ = linux.write(fd, msg_str.ptr, msg_str.len);
+            } else |_| {}
+        } else {
+            if (std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"error\":{{\"message\":\"{s}\"}}}}\n", .{err_msg})) |msg_str| {
+                _ = linux.write(fd, msg_str.ptr, msg_str.len);
+            } else |_| {}
+        }
     }
 };

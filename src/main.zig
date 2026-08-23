@@ -353,6 +353,10 @@ fn buildEnvp(
         try list.append(arena, e);
     }
     try list.append(arena, "TERM=monstar");
+    const pid = std.os.linux.getpid();
+    var sock_buf: [64]u8 = undefined;
+    const sock_env = try std.fmt.bufPrintZ(&sock_buf, "GTTY_SOCK=/tmp/gtty_{d}.sock", .{pid});
+    try list.append(arena, try arena.dupeZ(u8, sock_env));
     if (!has_terminfo) {
         var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
         if (std.process.executableDirPath(io, &exe_dir_buf)) |len| {

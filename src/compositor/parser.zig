@@ -11,7 +11,7 @@ const Align = msg.Align;
 const Justify = msg.Justify;
 
 pub fn parseLayerRender(allocator: std.mem.Allocator, root_val: std.json.Value) ![]const Layer {
-    var layers = std.ArrayList(Layer).init(allocator);
+    var layers: std.ArrayList(Layer) = .empty;
 
     const layers_val = switch (root_val) {
         .object => |obj| obj.get("layers") orelse return error.MissingLayersField,
@@ -23,13 +23,13 @@ pub fn parseLayerRender(allocator: std.mem.Allocator, root_val: std.json.Value) 
         .array => |arr| {
             for (arr.items) |item| {
                 const layer = try parseSingleLayer(allocator, item);
-                try layers.append(layer);
+                try layers.append(allocator, layer);
             }
         },
         else => return error.InvalidLayersType,
     }
 
-    return layers.toOwnedSlice();
+    return layers.toOwnedSlice(allocator);
 }
 
 fn parseSingleLayer(allocator: std.mem.Allocator, val: std.json.Value) !Layer {
@@ -128,12 +128,12 @@ fn parseSingleLayer(allocator: std.mem.Allocator, val: std.json.Value) !Layer {
     var children: []const Widget = &.{};
     if (obj.get("children")) |c_val| {
         if (c_val == .array) {
-            var w_list = std.ArrayList(Widget).init(allocator);
+            var w_list: std.ArrayList(Widget) = .empty;
             for (c_val.array.items) |item| {
                 const w = try parseWidget(allocator, item);
-                try w_list.append(w);
+                try w_list.append(allocator, w);
             }
-            children = try w_list.toOwnedSlice();
+            children = try w_list.toOwnedSlice(allocator);
         }
     }
 
@@ -226,39 +226,39 @@ fn parseWidget(allocator: std.mem.Allocator, val: std.json.Value) !Widget {
     var headers: []const []const u8 = &.{};
     if (obj.get("headers")) |h_val| {
         if (h_val == .array) {
-            var h_list = std.ArrayList([]const u8).init(allocator);
+            var h_list: std.ArrayList([]const u8) = .empty;
             for (h_val.array.items) |item| {
-                if (item == .string) try h_list.append(try allocator.dupe(u8, item.string));
+                if (item == .string) try h_list.append(allocator, try allocator.dupe(u8, item.string));
             }
-            headers = try h_list.toOwnedSlice();
+            headers = try h_list.toOwnedSlice(allocator);
         }
     }
 
     var rows: []const []const []const u8 = &.{};
     if (obj.get("rows")) |r_val| {
         if (r_val == .array) {
-            var r_list = std.ArrayList([]const []const u8).init(allocator);
+            var r_list: std.ArrayList([]const []const u8) = .empty;
             for (r_val.array.items) |row_item| {
                 if (row_item == .array) {
-                    var cell_list = std.ArrayList([]const u8).init(allocator);
+                    var cell_list: std.ArrayList([]const u8) = .empty;
                     for (row_item.array.items) |cell_item| {
-                        if (cell_item == .string) try cell_list.append(try allocator.dupe(u8, cell_item.string));
+                        if (cell_item == .string) try cell_list.append(allocator, try allocator.dupe(u8, cell_item.string));
                     }
-                    try r_list.append(try cell_list.toOwnedSlice());
+                    try r_list.append(allocator, try cell_list.toOwnedSlice(allocator));
                 }
             }
-            rows = try r_list.toOwnedSlice();
+            rows = try r_list.toOwnedSlice(allocator);
         }
     }
 
     var items: []const []const u8 = &.{};
     if (obj.get("items")) |it_val| {
         if (it_val == .array) {
-            var it_list = std.ArrayList([]const u8).init(allocator);
+            var it_list: std.ArrayList([]const u8) = .empty;
             for (it_val.array.items) |item| {
-                if (item == .string) try it_list.append(try allocator.dupe(u8, item.string));
+                if (item == .string) try it_list.append(allocator, try allocator.dupe(u8, item.string));
             }
-            items = try it_list.toOwnedSlice();
+            items = try it_list.toOwnedSlice(allocator);
         }
     }
 
@@ -270,12 +270,12 @@ fn parseWidget(allocator: std.mem.Allocator, val: std.json.Value) !Widget {
     var children: []const Widget = &.{};
     if (obj.get("children")) |c_val| {
         if (c_val == .array) {
-            var ch_list = std.ArrayList(Widget).init(allocator);
+            var ch_list: std.ArrayList(Widget) = .empty;
             for (c_val.array.items) |item| {
                 const child = try parseWidget(allocator, item);
-                try ch_list.append(child);
+                try ch_list.append(allocator, child);
             }
-            children = try ch_list.toOwnedSlice();
+            children = try ch_list.toOwnedSlice(allocator);
         }
     }
 

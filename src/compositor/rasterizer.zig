@@ -219,8 +219,8 @@ fn renderWidget(
         .button => {
             if (w.label) |lbl| {
                 const is_danger = if (w.variant) |v| std.mem.eql(u8, v, "danger") else false;
-                const btn_bg = if (w.focused) (if (is_danger) 0xfff38ba8 else 0xff89b4fa) else 0xff313244;
-                const btn_fg = if (w.focused) 0xff11111b else 0xffcdd6f4;
+                const btn_bg: u32 = if (w.focused) (if (is_danger) @as(u32, 0xfff38ba8) else @as(u32, 0xff89b4fa)) else @as(u32, 0xff313244);
+                const btn_fg: u32 = if (w.focused) 0xff11111b else 0xffcdd6f4;
                 const btn_w = @as(u32, @intCast(lbl.len + 4)) * FONT_WIDTH;
 
                 fillPixelRect(pixels, stride, width, height, wx, wy - 2, btn_w, FONT_HEIGHT + 4, btn_bg);
@@ -251,8 +251,9 @@ fn renderWidget(
                 if (is_selected) {
                     fillPixelRect(pixels, stride, width, height, wx - 4, row_y - 2, avail_w + 8, FONT_HEIGHT + 2, 0xff45475a);
                 }
+                const cell_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
                 for (row) |cell_txt| {
-                    drawText(pixels, stride, width, height, cell_txt, c_x, row_y, if (is_selected) 0xff89dceb else 0xffcdd6f4);
+                    drawText(pixels, stride, width, height, cell_txt, c_x, row_y, cell_fg);
                     c_x += 100;
                 }
                 row_y += FONT_HEIGHT + 2;
@@ -265,7 +266,8 @@ fn renderWidget(
                 if (is_selected) {
                     fillPixelRect(pixels, stride, width, height, wx - 4, item_y - 2, avail_w + 8, FONT_HEIGHT + 2, 0xff45475a);
                 }
-                drawText(pixels, stride, width, height, item, wx, item_y, if (is_selected) 0xff89dceb else 0xffcdd6f4);
+                const item_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
+                drawText(pixels, stride, width, height, item, wx, item_y, item_fg);
                 item_y += FONT_HEIGHT + 2;
             }
         },

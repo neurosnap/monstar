@@ -41,6 +41,7 @@ const DbusHandle = if (build_options.enable_dbus) ?DbusConnection else void;
 const no_dbus: DbusHandle = if (build_options.enable_dbus) null else {};
 const clipboard_format = @import("clipboard_format.zig");
 const Window = @import("Window.zig");
+const Compositor = @import("compositor/Compositor.zig").Compositor;
 
 const log = std.log.scoped(.app);
 
@@ -118,6 +119,7 @@ copy_highlight_fg: vt.color.RGB,
 copy_highlight_active: bool,
 /// Configured text color beneath a focused block cursor.
 cursor_text: ?vt.color.RGB,
+compositor: ?Compositor,
 window: *Window,
 keyboard: Keyboard,
 /// Terminal contents changed since the last committed frame.
@@ -632,6 +634,7 @@ pub fn init(
         .copy_highlight_fg = config.effectiveCopyHighlightForeground(.dark),
         .copy_highlight_active = false,
         .cursor_text = config.effectiveCursorText(.dark),
+        .compositor = Compositor.init(alloc, @intCast(std.os.linux.getpid())) catch null,
         .window = window,
         .keyboard = try .init(),
         .needs_redraw = true,
@@ -1337,6 +1340,7 @@ pub fn deinit(self: *App) void {
     self.hangupChild();
     self.pipeline.deinit();
     self.pty.deinit();
+    if (self.compositor) |*comp| comp.deinit();
     self.cancelDrag();
     self.selection_gesture.deinit(&self.term);
     if (self.async_raster_loader) |*loader| loader.deinit();
@@ -1406,6 +1410,7 @@ pub fn run(self: *App) !void {
         .{ .fd = self.scrollbar_fd, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = self.kitty_animation_fd, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = self.compression_fd, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = -1, .events = posix.POLL.IN, .revents = 0 },
     };
     const wl_fd = &fds[0];
     const pipeline_fd = &fds[1];
@@ -1424,11 +1429,13 @@ pub fn run(self: *App) !void {
     const scrollbar_fd = &fds[14];
     const kitty_animation_fd = &fds[15];
     const compression_fd = &fds[16];
+    const compositor_fd = &fds[17];
 
     while (self.window.running and (!self.child_exited or self.hold)) {
         self.syncScrollbackCompression();
         wl_fd.events = posix.POLL.IN;
         dbus_fd.fd = self.dbus_fd;
+        compositor_fd.fd = if (self.compositor) |*comp| comp.socketFd() orelse -1 else -1;
         async_fd.fd = if (self.async_raster_loader) |*loader|
             loader.complete_fd
         else if (self.async_raster) |*async_raster|
@@ -1549,6 +1556,15 @@ pub fn run(self: *App) !void {
                 self.finishAsyncRasterLoad()
             else
                 self.finishAsyncRender();
+        }
+
+        if (compositor_fd.revents & (posix.POLL.IN | posix.POLL.HUP) != 0) {
+            if (self.compositor) |*comp| {
+                if (comp.poll()) {
+                    self.async_force_full = true;
+                    self.needs_redraw = true;
+                }
+            }
         }
 
         if (self.clipboard.transferFd() >= 0 and paste_fd.revents & (posix.POLL.IN | posix.POLL.HUP) != 0) {
@@ -4455,6 +4471,19 @@ fn onKey(self: *App, evdev_keycode: u32, action: vt.input.KeyAction) void {
     var utf8_buf: [16]u8 = undefined;
     const event = self.keyboard.translate(&utf8_buf, evdev_keycode, action) orelse return;
 
+    if (self.compositor) |*comp| {
+        if (comp.hasActiveModal()) {
+            if (action == .press) {
+                if (event.key == .escape) {
+                    comp.scene.clear();
+                    self.async_force_full = true;
+                    self.needs_redraw = true;
+                }
+            }
+            return;
+        }
+    }
+
     if (self.search != null) return self.handleSearchKey(event);
 
     // Shift is only allowed on `=` (for `Ctrl++`); ctrl+_ and ctrl+) belong to the application.
@@ -4955,13 +4984,32 @@ fn commitHeldFrame(self: *App) void {
 /// Commit an async-rendered buffer using the current frame's damage
 /// entry. Commit failures are fatal: the surface is unusable.
 fn commitFinishedFrame(self: *App, buffer: *Window.Buffer) void {
-    const surface_damage = self.frame_damage.currentSurfaceDamage(buffer.height) catch |err| {
-        log.err("async surface damage failed: {}", .{err});
-        self.window.cancelRender(buffer);
-        self.window.fatal_error = err;
-        self.window.running = false;
-        return;
-    };
+    if (self.compositor) |*comp| {
+        const cursor = self.render_state.cursor;
+        const cursor_x: i32 = if (cursor.viewport) |vp| @intCast(vp.x * self.font.cell_width) else 0;
+        const cursor_y: i32 = if (cursor.viewport) |vp| @intCast(vp.y * self.font.cell_height) else 0;
+        comp.renderOverlays(
+            buffer.pixels(),
+            buffer.width,
+            buffer.width,
+            buffer.height,
+            cursor_x,
+            cursor_y,
+            self.font.cell_width,
+            self.font.cell_height,
+        );
+    }
+
+    const surface_damage: Window.Damage = if (self.compositor != null and self.compositor.?.hasActiveOverlays())
+        .{ .full = {} }
+    else
+        self.frame_damage.currentSurfaceDamage(buffer.height) catch |err| {
+            log.err("async surface damage failed: {}", .{err});
+            self.window.cancelRender(buffer);
+            self.window.fatal_error = err;
+            self.window.running = false;
+            return;
+        };
     self.window.commitRender(buffer, surface_damage) catch |err| {
         log.err("async commit failed: {}", .{err});
         self.window.cancelRender(buffer);
