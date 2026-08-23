@@ -9,6 +9,7 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     server_fd: posix.fd_t,
+    epoll_fd: posix.fd_t,
     client_fds: std.ArrayList(posix.fd_t),
     dirty: bool = false,
 
@@ -40,10 +41,22 @@ pub const Server = struct {
         const listen_rc = linux.listen(socket_fd, 16);
         if (linux.errno(listen_rc) != .SUCCESS) return error.ListenFailed;
 
+        const epoll_rc = linux.epoll_create1(linux.EPOLL.CLOEXEC);
+        if (linux.errno(epoll_rc) != .SUCCESS) return error.EpollFailed;
+        const epoll_fd: posix.fd_t = @intCast(epoll_rc);
+        errdefer _ = linux.close(epoll_fd);
+
+        var ev = linux.epoll_event{
+            .events = linux.EPOLL.IN,
+            .data = linux.epoll_data{ .fd = socket_fd },
+        };
+        _ = linux.epoll_ctl(epoll_fd, linux.EPOLL.CTL_ADD, socket_fd, &ev);
+
         return Server{
             .allocator = allocator,
             .socket_path = socket_path,
             .server_fd = socket_fd,
+            .epoll_fd = epoll_fd,
             .client_fds = .empty,
             .dirty = false,
         };
@@ -55,6 +68,7 @@ pub const Server = struct {
         }
         self.client_fds.deinit(self.allocator);
         _ = linux.close(self.server_fd);
+        _ = linux.close(self.epoll_fd);
         _ = linux.unlink(self.socket_path.ptr);
         self.allocator.free(self.socket_path);
     }
@@ -76,6 +90,12 @@ pub const Server = struct {
                 _ = linux.close(client_fd);
                 break;
             };
+
+            var client_ev = linux.epoll_event{
+                .events = linux.EPOLL.IN | linux.EPOLL.HUP | linux.EPOLL.RDHUP,
+                .data = linux.epoll_data{ .fd = client_fd },
+            };
+            _ = linux.epoll_ctl(self.epoll_fd, linux.EPOLL.CTL_ADD, client_fd, &client_ev);
         }
     }
 
@@ -94,6 +114,7 @@ pub const Server = struct {
             };
 
             if (bytes_read == 0) {
+                _ = linux.epoll_ctl(self.epoll_fd, linux.EPOLL.CTL_DEL, fd, null);
                 _ = linux.close(fd);
                 _ = self.client_fds.orderedRemove(i);
                 continue;

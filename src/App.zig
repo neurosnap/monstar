@@ -1438,6 +1438,7 @@ pub fn run(self: *App) !void {
         wl_fd.events = posix.POLL.IN;
         dbus_fd.fd = self.dbus_fd;
         compositor_fd.fd = if (self.compositor) |*comp| comp.socketFd() orelse -1 else -1;
+        compositor_fd.events = posix.POLL.IN;
         async_fd.fd = if (self.async_raster_loader) |*loader|
             loader.complete_fd
         else if (self.async_raster) |*async_raster|
