@@ -1664,12 +1664,92 @@ fn reloadConfig(self: *App) void {
         log.warn("config reload failed: {}", .{err});
         return;
     };
-
     self.config_arena.deinit();
     self.config_arena = arena_state;
     self.config = new_config;
     committed = true;
+    self.syncTerminalVisibility();
     log.info("config reloaded", .{});
+}
+
+fn openCommandPalette(self: *App) void {
+    if (self.compositor) |*comp| {
+        const arena = comp.scene.arena.allocator();
+        const palette_json =
+            \\{
+            \\  "layers": [
+            \\    {
+            \\      "id": "command_palette",
+            \\      "type": "modal",
+            \\      "anchor": "center",
+            \\      "width": 52,
+            \\      "height": 13,
+            \\      "style": {
+            \\        "border": "rounded",
+            \\        "title": " Command Palette (Esc to close) ",
+            \\        "border_fg": "#89b4fa",
+            \\        "bg": "#1e1e2e",
+            \\        "shadow": true,
+            \\        "backdrop": {"dim": 0.6}
+            \\      },
+            \\      "children": [
+            \\        {
+            \\          "type": "input",
+            \\          "id": "palette_search",
+            \\          "placeholder": "Type command or search...",
+            \\          "value": "",
+            \\          "focused": true
+            \\        },
+            \\        {
+            \\          "type": "list",
+            \\          "id": "palette_commands",
+            \\          "margin_top": 1,
+            \\          "selected_index": 0,
+            \\          "items": [
+            \\            "1. Git: Status",
+            \\            "2. Git: Log Graph",
+            \\            "3. Top: Launch System Monitor",
+            \\            "4. Config: Reload Settings",
+            \\            "5. Font: Increase Size",
+            \\            "6. Font: Decrease Size",
+            \\            "7. Screen: Clear Scrollback"
+            \\          ]
+            \\        }
+            \\      ]
+            \\    }
+            \\  ]
+            \\}
+        ;
+        var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, palette_json, .{}) catch return;
+        defer parsed.deinit();
+
+        const parser = @import("compositor/parser.zig");
+        if (parser.parseLayerRender(arena, parsed.value)) |layers| {
+            comp.scene.setLayers(layers) catch return;
+            self.async_force_full = true;
+            self.needs_redraw = true;
+        } else |_| {}
+    }
+}
+
+fn executeBuiltinCommand(self: *App, selected_index: ?usize, value: ?[]const u8) void {
+    _ = value;
+    if (selected_index) |idx| {
+        switch (idx) {
+            0 => _ = self.tryPtyWrite("git status\n"),
+            1 => _ = self.tryPtyWrite("git log --oneline --graph --decorate -n 15\n"),
+            2 => _ = self.tryPtyWrite("top\n"),
+            3 => self.reloadConfig(),
+            4 => self.adjustRuntimeFontSize(1),
+            5 => self.adjustRuntimeFontSize(-1),
+            6 => {
+                self.term.screens.active.pages.scroll(.active);
+                self.clearSelection();
+                self.needs_redraw = true;
+            },
+            else => {},
+        }
+    }
 }
 
 /// Ctrl+Shift+N: spawn an independent monstar window in the shell's
@@ -2773,6 +2853,33 @@ fn pointerEvent(ctx: *anyopaque, event: wl.Pointer.Event) void {
         .button => |button| {
             self.last_serial = button.serial;
             if (button.state == .pressed) self.stopFling();
+
+            if (self.compositor) |*comp| {
+                if (comp.hasActiveOverlays()) {
+                    if (button.button == 272 and button.state == .pressed) {
+                        const px: i32 = @intFromFloat(self.pointer_x);
+                        const py: i32 = @intFromFloat(self.pointer_y);
+                        const act = comp.handlePointerClick(px, py, @intCast(self.window.width), @intCast(self.window.height), self.font.cell_width, self.font.cell_height);
+                        switch (act) {
+                            .none => {},
+                            .redraw, .dismiss, .click, .change => {
+                                self.async_force_full = true;
+                                self.needs_redraw = true;
+                            },
+                            .submit => |s| {
+                                if (std.mem.eql(u8, s.layer_id, "command_palette")) {
+                                    self.executeBuiltinCommand(s.selected_index, s.value);
+                                    comp.scene.clear();
+                                }
+                                self.async_force_full = true;
+                                self.needs_redraw = true;
+                            },
+                        }
+                    }
+                    return;
+                }
+            }
+
             if (button.button == 272) { // BTN_LEFT
                 if (button.state == .pressed and self.beginScrollbarDrag()) return;
                 if (button.state == .released and self.finishScrollbarDrag()) return;
@@ -4475,12 +4582,23 @@ fn onKey(self: *App, evdev_keycode: u32, action: vt.input.KeyAction) void {
     const event = self.keyboard.translate(&utf8_buf, evdev_keycode, action) orelse return;
 
     if (self.compositor) |*comp| {
-        if (comp.hasActiveModal()) {
-            if (action == .press) {
-                if (event.key == .escape) {
-                    comp.scene.clear();
-                    self.async_force_full = true;
-                    self.needs_redraw = true;
+        if (comp.hasActiveOverlays()) {
+            if (action == .press or action == .repeat) {
+                const act = comp.handleKeyEvent(event.key, event.utf8, event.mods);
+                switch (act) {
+                    .none => {},
+                    .redraw, .dismiss, .click, .change => {
+                        self.async_force_full = true;
+                        self.needs_redraw = true;
+                    },
+                    .submit => |s| {
+                        if (std.mem.eql(u8, s.layer_id, "command_palette")) {
+                            self.executeBuiltinCommand(s.selected_index, s.value);
+                            comp.scene.clear();
+                        }
+                        self.async_force_full = true;
+                        self.needs_redraw = true;
+                    },
                 }
             }
             return;
@@ -4506,6 +4624,7 @@ fn onKey(self: *App, evdev_keycode: u32, action: vt.input.KeyAction) void {
             'f' => return self.startSearch(),
             'g' => return self.pipeCommandOutput(),
             'n' => return self.spawnNewWindow(),
+            'p' => return self.openCommandPalette(),
             'v' => return self.beginPaste(.clipboard),
             'x' => return self.jumpPrompt(1),
             'z' => return self.jumpPrompt(-1),

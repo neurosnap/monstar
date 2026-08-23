@@ -179,6 +179,7 @@ pub fn drawBoxBorders(
     rect: Rect,
     border: BorderType,
     border_color: u32,
+    bg_color: u32,
     title: ?[]const u8,
     cell_w: u32,
     cell_h: u32,
@@ -207,10 +208,22 @@ pub fn drawBoxBorders(
         if (title_w + 24 < rw) {
             const tx = rx + 16;
             // Erase behind title
-            fillPixelRect(pixels, stride, width, height, tx - 4, ry - 4, title_w + 8, cell_h, 0xff1e1e2e);
+            fillPixelRect(pixels, stride, width, height, tx - 4, ry - 4, title_w + 8, cell_h, bg_color);
             drawText(pixels, stride, width, height, font, allocator, t, tx, ry - 2, border_color, cell_w, cell_h);
         }
     }
+}
+
+pub fn widgetHeight(w: Widget, cell_h: u32) i32 {
+    const ch: i32 = @intCast(cell_h);
+    return switch (w.type) {
+        .list => @as(i32, @intCast(@max(1, w.items.len))) * (ch + 2) + 4,
+        .table => @as(i32, @intCast(1 + w.rows.len)) * (ch + 2) + 4,
+        .input => ch + 8,
+        .header => ch + 6,
+        .button, .box => ch + 6,
+        else => ch + 4,
+    };
 }
 
 pub fn renderLayer(
@@ -238,14 +251,15 @@ pub fn renderLayer(
 
     // 3. Borders & Title
     const border_col = if (layer.style.border_fg) |bfg| parseHexRgb(bfg) else 0xff89b4fa;
-    drawBoxBorders(pixels, stride, width, height, rect, layer.style.border, border_col, layer.style.title, cell_w, cell_h, font, allocator);
+    drawBoxBorders(pixels, stride, width, height, rect, layer.style.border, border_col, bg_col, layer.style.title, cell_w, cell_h, font, allocator);
 
-    // 4. Render children widgets
-    var cur_y: i32 = rect.y + @as(i32, @intCast(cell_h / 2));
+    // 4. Render children widgets with clean top padding
+    const has_border_or_title = layer.style.border != .none or layer.style.title != null;
+    var cur_y: i32 = rect.y + @as(i32, @intCast(cell_h)) + (if (has_border_or_title) @as(i32, 8) else @as(i32, 4));
     for (layer.children) |w| {
         cur_y += @as(i32, @intCast(w.margin_top)) * @as(i32, @intCast(cell_h));
         renderWidget(pixels, stride, width, height, w, rect.x + 12, cur_y, rect.width - 24, cell_w, cell_h, font, allocator);
-        cur_y += @as(i32, @intCast(cell_h)) + 4 + @as(i32, @intCast(w.gap));
+        cur_y += widgetHeight(w, cell_h) + @as(i32, @intCast(w.gap));
     }
 }
 
@@ -335,6 +349,22 @@ fn renderWidget(
                 const item_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
                 drawText(pixels, stride, width, height, font, allocator, item, wx, item_y, item_fg, cell_w, cell_h);
                 item_y += @as(i32, @intCast(cell_h + 2));
+            }
+        },
+        .input => {
+            const input_bg: u32 = 0xff181825;
+            const input_border: u32 = if (w.focused) 0xff89b4fa else 0xff45475a;
+            fillPixelRect(pixels, stride, width, height, wx - 4, wy - 3, avail_w + 8, cell_h + 6, input_bg);
+            drawBoxBorders(pixels, stride, width, height, .{ .x = wx - 4, .y = wy - 3, .width = avail_w + 8, .height = cell_h + 6 }, .rounded, input_border, input_bg, null, cell_w, cell_h, font, allocator);
+
+            const display_txt = if (w.value) |v| (if (v.len > 0) v else (w.placeholder orelse "")) else (w.placeholder orelse "");
+            const fg_color: u32 = if (w.value != null and w.value.?.len > 0) 0xffcdd6f4 else 0xff6c7086;
+            drawText(pixels, stride, width, height, font, allocator, display_txt, wx + 2, wy, fg_color, cell_w, cell_h);
+
+            // Draw cursor if focused
+            if (w.focused) {
+                const cur_x = wx + 2 + @as(i32, @intCast(w.cursor_pos)) * @as(i32, @intCast(cell_w));
+                fillPixelRect(pixels, stride, width, height, cur_x, wy - 1, 2, cell_h + 2, 0xff89b4fa);
             }
         },
         else => {},

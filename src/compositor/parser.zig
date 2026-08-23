@@ -10,7 +10,7 @@ const Direction = msg.Direction;
 const Align = msg.Align;
 const Justify = msg.Justify;
 
-pub fn parseLayerRender(allocator: std.mem.Allocator, root_val: std.json.Value) ![]const Layer {
+pub fn parseLayerRender(allocator: std.mem.Allocator, root_val: std.json.Value) ![]Layer {
     var layers: std.ArrayList(Layer) = .empty;
 
     const layers_val = switch (root_val) {
@@ -125,7 +125,7 @@ fn parseSingleLayer(allocator: std.mem.Allocator, val: std.json.Value) !Layer {
         }
     }
 
-    var children: []const Widget = &.{};
+    var children: []Widget = &.{};
     if (obj.get("children")) |c_val| {
         if (c_val == .array) {
             var w_list: std.ArrayList(Widget) = .empty;
@@ -187,6 +187,21 @@ fn parseWidget(allocator: std.mem.Allocator, val: std.json.Value) !Widget {
     var variant: ?[]const u8 = null;
     if (obj.get("variant")) |var_val| {
         if (var_val == .string) variant = try allocator.dupe(u8, var_val.string);
+    }
+
+    var placeholder: ?[]const u8 = null;
+    if (obj.get("placeholder")) |ph_val| {
+        if (ph_val == .string) placeholder = try allocator.dupe(u8, ph_val.string);
+    }
+
+    var value: ?[]const u8 = null;
+    if (obj.get("value")) |v_val| {
+        if (v_val == .string) value = try allocator.dupe(u8, v_val.string);
+    }
+
+    var cursor_pos: u16 = 0;
+    if (obj.get("cursor_pos")) |cp_val| {
+        if (cp_val == .integer) cursor_pos = @intCast(cp_val.integer);
     }
 
     var focused: bool = false;
@@ -267,7 +282,7 @@ fn parseWidget(allocator: std.mem.Allocator, val: std.json.Value) !Widget {
         if (si == .integer) selected_index = @intCast(si.integer);
     }
 
-    var children: []const Widget = &.{};
+    var children: []Widget = &.{};
     if (obj.get("children")) |c_val| {
         if (c_val == .array) {
             var ch_list: std.ArrayList(Widget) = .empty;
@@ -291,6 +306,9 @@ fn parseWidget(allocator: std.mem.Allocator, val: std.json.Value) !Widget {
         .title = title,
         .label = label,
         .variant = variant,
+        .placeholder = placeholder,
+        .value = value,
+        .cursor_pos = cursor_pos,
         .focused = focused,
         .headers = headers,
         .rows = rows,

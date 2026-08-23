@@ -203,4 +203,12 @@ pub const Server = struct {
             } else |_| {}
         }
     }
+
+    pub fn broadcastEvent(self: *Server, method: []const u8, params_json: []const u8) void {
+        var msg_buf: [1024]u8 = undefined;
+        const msg_str = std.fmt.bufPrint(&msg_buf, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":{s}}}\n", .{ method, params_json }) catch return;
+        for (self.client_fds.items) |cfd| {
+            _ = linux.write(cfd, msg_str.ptr, msg_str.len);
+        }
+    }
 };

@@ -1,4 +1,6 @@
 const std = @import("std");
+const posix = std.posix;
+const linux = std.os.linux;
 
 pub const message = @import("message.zig");
 pub const parser = @import("parser.zig");
@@ -67,6 +69,94 @@ pub const Compositor = struct {
 
     pub fn hasActiveModal(self: *const Compositor) bool {
         return self.scene.hasActiveModal();
+    }
+
+    pub fn handleKeyEvent(self: *Compositor, key: @import("ghostty-vt").input.Key, utf8: []const u8, mods: @import("ghostty-vt").input.KeyMods) scene_mod.EventAction {
+        const action = self.scene.handleKeyEvent(key, utf8, mods);
+        switch (action) {
+            .dismiss => |lid| {
+                var param_buf: [128]u8 = undefined;
+                if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\"}}", .{lid})) |p| {
+                    self.broadcastEvent("event.dismiss", p);
+                } else |_| {}
+            },
+            .click => |c| {
+                var param_buf: [256]u8 = undefined;
+                if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"widget_id\":\"{s}\"}}", .{ c.layer_id, c.widget_id })) |p| {
+                    self.broadcastEvent("event.click", p);
+                } else |_| {}
+            },
+            .submit => |s| {
+                var param_buf: [512]u8 = undefined;
+                if (s.selected_index) |idx| {
+                    if (s.value) |v| {
+                        if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"selected_index\":{d},\"value\":\"{s}\"}}", .{ s.layer_id, idx, v })) |p| {
+                            self.broadcastEvent("event.submit", p);
+                        } else |_| {}
+                    } else {
+                        if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"selected_index\":{d}}}", .{ s.layer_id, idx })) |p| {
+                            self.broadcastEvent("event.submit", p);
+                        } else |_| {}
+                    }
+                } else if (s.value) |v| {
+                    if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"value\":\"{s}\"}}", .{ s.layer_id, v })) |p| {
+                        self.broadcastEvent("event.submit", p);
+                    } else |_| {}
+                }
+            },
+            .change => |ch| {
+                var param_buf: [512]u8 = undefined;
+                if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"widget_id\":\"{s}\",\"value\":\"{s}\"}}", .{ ch.layer_id, ch.widget_id, ch.value })) |p| {
+                    self.broadcastEvent("event.change", p);
+                } else |_| {}
+            },
+            else => {},
+        }
+        return action;
+    }
+
+    pub fn handlePointerClick(self: *Compositor, px: i32, py: i32, screen_w: u32, screen_h: u32, cell_w: u32, cell_h: u32) scene_mod.EventAction {
+        const action = self.scene.handlePointerClick(px, py, screen_w, screen_h, cell_w, cell_h);
+        switch (action) {
+            .dismiss => |lid| {
+                var param_buf: [128]u8 = undefined;
+                if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\"}}", .{lid})) |p| {
+                    self.broadcastEvent("event.dismiss", p);
+                } else |_| {}
+            },
+            .click => |c| {
+                var param_buf: [256]u8 = undefined;
+                if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"widget_id\":\"{s}\"}}", .{ c.layer_id, c.widget_id })) |p| {
+                    self.broadcastEvent("event.click", p);
+                } else |_| {}
+            },
+            .submit => |s| {
+                var param_buf: [512]u8 = undefined;
+                if (s.selected_index) |idx| {
+                    if (s.value) |v| {
+                        if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"selected_index\":{d},\"value\":\"{s}\"}}", .{ s.layer_id, idx, v })) |p| {
+                            self.broadcastEvent("event.submit", p);
+                        } else |_| {}
+                    } else {
+                        if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"selected_index\":{d}}}", .{ s.layer_id, idx })) |p| {
+                            self.broadcastEvent("event.submit", p);
+                        } else |_| {}
+                    }
+                } else if (s.value) |v| {
+                    if (std.fmt.bufPrint(&param_buf, "{{\"layer_id\":\"{s}\",\"value\":\"{s}\"}}", .{ s.layer_id, v })) |p| {
+                        self.broadcastEvent("event.submit", p);
+                    } else |_| {}
+                }
+            },
+            else => {},
+        }
+        return action;
+    }
+
+    pub fn broadcastEvent(self: *Compositor, method: []const u8, params_json: []const u8) void {
+        if (self.server) |*srv| {
+            srv.broadcastEvent(method, params_json);
+        }
     }
 
     pub fn renderOverlays(
@@ -287,8 +377,6 @@ test "PTY bytestream and VT terminal grid state isolation during multi-surface c
 
 test "Out-of-band IPC server roundtrip isolation" {
     const allocator = std.testing.allocator;
-    const posix = std.posix;
-    const linux = std.os.linux;
 
     // Use a unique PID for testing to avoid collisions
     const test_pid: i32 = 98765;
@@ -385,8 +473,6 @@ const PtyStreamTester = struct {
 test "High-throughput concurrent PTY stream byte-for-byte integrity during compositor RPC" {
     const allocator = std.testing.allocator;
     const Pty = @import("../Pty.zig");
-    const posix = std.posix;
-    const linux = std.os.linux;
 
     var pty = try Pty.open(.{ .row = 24, .col = 80, .xpixel = 0, .ypixel = 0 });
     defer pty.deinit();
@@ -489,4 +575,84 @@ test "High-throughput concurrent PTY stream byte-for-byte integrity during compo
 
     // Byte-for-byte SHA256 equality verification
     try std.testing.expectEqualSlices(u8, &expected_digest, &actual_digest);
+}
+
+test "Interactive keyboard navigation, input editing, and two-way IPC event broadcasting" {
+    const allocator = std.testing.allocator;
+    const test_pid: i32 = 98767;
+    var comp = try Compositor.init(allocator, test_pid);
+    defer comp.deinit();
+
+    const sock_path = comp.socketPath() orelse return error.MissingSocketPath;
+
+    // Connect client socket
+    var un: posix.sockaddr.un = .{
+        .family = posix.AF.UNIX,
+        .path = [_]u8{0} ** 108,
+    };
+    @memcpy(un.path[0..sock_path.len], sock_path);
+
+    const client_rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.NONBLOCK, 0);
+    try std.testing.expect(linux.errno(client_rc) == .SUCCESS);
+    const client_fd: posix.fd_t = @intCast(client_rc);
+    defer _ = linux.close(client_fd);
+
+    const addr_len: posix.socklen_t = @intCast(@offsetOf(posix.sockaddr.un, "path") + sock_path.len + 1);
+    const conn_rc = linux.connect(client_fd, @ptrCast(&un), addr_len);
+    try std.testing.expect(linux.errno(conn_rc) == .SUCCESS or linux.errno(conn_rc) == .INPROGRESS);
+
+    // Initial layer render with input and list
+    const req =
+        \\{"jsonrpc":"2.0","id":1,"method":"layer.render","params":{"layers":[{"id":"test_palette","type":"modal","children":[{"type":"input","id":"search","value":"git","cursor_pos":3,"focused":true},{"type":"list","id":"items","selected_index":0,"items":["1. Status","2. Commit","3. Push"]}]}]}}
+        \\
+    ;
+    _ = linux.write(client_fd, req.ptr, req.len);
+    _ = comp.poll();
+
+    try std.testing.expect(comp.hasActiveModal());
+
+    // 1. Type character ' ' (space) into input
+    const act1 = comp.handleKeyEvent(.space, " ", .{});
+    try std.testing.expect(act1 == .change);
+    try std.testing.expectEqualStrings("test_palette", act1.change.layer_id);
+    try std.testing.expectEqualStrings("search", act1.change.widget_id);
+    try std.testing.expectEqualStrings("git ", act1.change.value);
+
+    // Verify event was broadcasted to client socket
+    var read_buf: [1024]u8 = undefined;
+    var n = linux.read(client_fd, &read_buf, read_buf.len);
+    try std.testing.expect(n > 0);
+    const event_str1 = read_buf[0..@intCast(n)];
+    try std.testing.expect(std.mem.indexOf(u8, event_str1, "event.change") != null);
+    try std.testing.expect(std.mem.indexOf(u8, event_str1, "git ") != null);
+
+    // 2. Navigate list down
+    const act2 = comp.handleKeyEvent(.arrow_down, "", .{});
+    try std.testing.expectEqual(scene_mod.EventAction.redraw, act2);
+
+    // 3. Press Enter to submit selected list item
+    const act3 = comp.handleKeyEvent(.enter, "\r", .{});
+    try std.testing.expect(act3 == .submit);
+    try std.testing.expectEqualStrings("test_palette", act3.submit.layer_id);
+    try std.testing.expectEqual(@as(?usize, 1), act3.submit.selected_index);
+    try std.testing.expectEqualStrings("2. Commit", act3.submit.value.?);
+
+    // Read event.submit from socket
+    n = linux.read(client_fd, &read_buf, read_buf.len);
+    try std.testing.expect(n > 0);
+    const event_str2 = read_buf[0..@intCast(n)];
+    try std.testing.expect(std.mem.indexOf(u8, event_str2, "event.submit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, event_str2, "2. Commit") != null);
+
+    // 4. Press Escape to dismiss
+    const act4 = comp.handleKeyEvent(.escape, "\x1b", .{});
+    try std.testing.expect(act4 == .dismiss);
+    try std.testing.expectEqualStrings("test_palette", act4.dismiss);
+    try std.testing.expect(!comp.hasActiveModal());
+
+    // Read event.dismiss from socket
+    n = linux.read(client_fd, &read_buf, read_buf.len);
+    try std.testing.expect(n > 0);
+    const event_str3 = read_buf[0..@intCast(n)];
+    try std.testing.expect(std.mem.indexOf(u8, event_str3, "event.dismiss") != null);
 }

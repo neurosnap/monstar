@@ -164,7 +164,7 @@ pub const Widget = struct {
     items: []const []const u8 = &.{},
 
     // Children
-    children: []const Widget = &.{},
+    children: []Widget = &.{},
 };
 
 pub const Layer = struct {
@@ -179,7 +179,7 @@ pub const Layer = struct {
     z_index: i32 = 0,
     direction: Direction = .column,
     style: LayerStyle = .{},
-    children: []const Widget = &.{},
+    children: []Widget = &.{},
 };
 
 pub const RpcRequest = struct {
