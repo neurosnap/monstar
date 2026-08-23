@@ -1,4 +1,5 @@
 const std = @import("std");
+const c = @import("c");
 const msg = @import("message.zig");
 const Layer = msg.Layer;
 const Widget = msg.Widget;
@@ -6,6 +7,8 @@ const BorderType = msg.BorderType;
 const blend_mod = @import("blend.zig");
 const scene_mod = @import("scene.zig");
 const Rect = scene_mod.Rect;
+const Font = @import("../Font.zig");
+const pixel_raster = @import("../pixel_raster.zig");
 
 pub const FONT_WIDTH: u32 = 8;
 pub const FONT_HEIGHT: u32 = 16;
@@ -95,11 +98,43 @@ pub fn drawChar(
     }
 }
 
+fn drawCodepointWithFont(
+    pixels: []u32,
+    stride: u31,
+    width: u31,
+    height: u31,
+    f: *Font,
+    allocator: std.mem.Allocator,
+    cp: u21,
+    px: i32,
+    py: i32,
+    fg_col: u32,
+    cell_w: u32,
+    cell_h: u32,
+) void {
+    if (cp == ' ') return;
+    const face_idx = f.faceForCodepoint(allocator, cp);
+    const face_ptr = f.face(face_idx);
+    const glyph_idx = c.FT_Get_Char_Index(face_ptr.ft_face, cp);
+    if (glyph_idx != 0) {
+        if (face_ptr.glyph(allocator, glyph_idx, 1, false)) |g| {
+            const baseline_y: i32 = py + @as(i32, @intCast(f.baseline));
+            const gx = px + g.bearing_x;
+            const gy = baseline_y - g.bearing_y;
+            pixel_raster.blitGlyph(pixels, stride, width, height, g, gx, gy, fg_col, false, null);
+            return;
+        } else |_| {}
+    }
+    drawChar(pixels, stride, width, height, cp, px, py, fg_col, cell_w, cell_h);
+}
+
 pub fn drawText(
     pixels: []u32,
     stride: u31,
     width: u31,
     height: u31,
+    font: ?*Font,
+    allocator: std.mem.Allocator,
     text: []const u8,
     px: i32,
     py: i32,
@@ -108,16 +143,30 @@ pub fn drawText(
     cell_h: u32,
 ) void {
     var cur_x = px;
+    const cw = @max(1, cell_w);
+    const ch = @max(1, cell_h);
+
+    if (font) |f| {
+        if (std.unicode.Utf8View.init(text)) |view| {
+            var it = view.iterator();
+            while (it.nextCodepoint()) |cp| {
+                drawCodepointWithFont(pixels, stride, width, height, f, allocator, cp, cur_x, py, fg_col, cw, ch);
+                cur_x += @as(i32, @intCast(cw));
+            }
+            return;
+        } else |_| {}
+    }
+
     if (std.unicode.Utf8View.init(text)) |view| {
         var it = view.iterator();
         while (it.nextCodepoint()) |cp| {
-            drawChar(pixels, stride, width, height, cp, cur_x, py, fg_col, cell_w, cell_h);
-            cur_x += @as(i32, @intCast(cell_w));
+            drawChar(pixels, stride, width, height, cp, cur_x, py, fg_col, cw, ch);
+            cur_x += @as(i32, @intCast(cw));
         }
     } else |_| {
         for (text) |byte| {
-            drawChar(pixels, stride, width, height, byte, cur_x, py, fg_col, cell_w, cell_h);
-            cur_x += @as(i32, @intCast(cell_w));
+            drawChar(pixels, stride, width, height, byte, cur_x, py, fg_col, cw, ch);
+            cur_x += @as(i32, @intCast(cw));
         }
     }
 }
@@ -133,6 +182,8 @@ pub fn drawBoxBorders(
     title: ?[]const u8,
     cell_w: u32,
     cell_h: u32,
+    font: ?*Font,
+    allocator: std.mem.Allocator,
 ) void {
     if (border == .none or rect.width < 16 or rect.height < 16) return;
 
@@ -157,7 +208,7 @@ pub fn drawBoxBorders(
             const tx = rx + 16;
             // Erase behind title
             fillPixelRect(pixels, stride, width, height, tx - 4, ry - 4, title_w + 8, cell_h, 0xff1e1e2e);
-            drawText(pixels, stride, width, height, t, tx, ry - 2, border_color, cell_w, cell_h);
+            drawText(pixels, stride, width, height, font, allocator, t, tx, ry - 2, border_color, cell_w, cell_h);
         }
     }
 }
@@ -171,6 +222,8 @@ pub fn renderLayer(
     rect: Rect,
     cell_w: u32,
     cell_h: u32,
+    font: ?*Font,
+    allocator: std.mem.Allocator,
 ) void {
     if (!layer.visible) return;
 
@@ -185,13 +238,13 @@ pub fn renderLayer(
 
     // 3. Borders & Title
     const border_col = if (layer.style.border_fg) |bfg| parseHexRgb(bfg) else 0xff89b4fa;
-    drawBoxBorders(pixels, stride, width, height, rect, layer.style.border, border_col, layer.style.title, cell_w, cell_h);
+    drawBoxBorders(pixels, stride, width, height, rect, layer.style.border, border_col, layer.style.title, cell_w, cell_h, font, allocator);
 
     // 4. Render children widgets
     var cur_y: i32 = rect.y + @as(i32, @intCast(cell_h / 2));
     for (layer.children) |w| {
         cur_y += @as(i32, @intCast(w.margin_top)) * @as(i32, @intCast(cell_h));
-        renderWidget(pixels, stride, width, height, w, rect.x + 12, cur_y, rect.width - 24, cell_w, cell_h);
+        renderWidget(pixels, stride, width, height, w, rect.x + 12, cur_y, rect.width - 24, cell_w, cell_h, font, allocator);
         cur_y += @as(i32, @intCast(cell_h)) + 4 + @as(i32, @intCast(w.gap));
     }
 }
@@ -207,6 +260,8 @@ fn renderWidget(
     avail_w: u32,
     cell_w: u32,
     cell_h: u32,
+    font: ?*Font,
+    allocator: std.mem.Allocator,
 ) void {
     switch (w.type) {
         .text => {
@@ -219,13 +274,13 @@ fn renderWidget(
                         tx = wx + @as(i32, @intCast((avail_w - txt_len_px) / 2));
                     }
                 }
-                drawText(pixels, stride, width, height, t, tx, wy, fg, cell_w, cell_h);
+                drawText(pixels, stride, width, height, font, allocator, t, tx, wy, fg, cell_w, cell_h);
             }
         },
         .header => {
             if (w.title) |t| {
                 fillPixelRect(pixels, stride, width, height, wx - 4, wy - 2, avail_w + 8, cell_h + 4, 0xff89b4fa);
-                drawText(pixels, stride, width, height, t, wx + 4, wy, 0xff11111b, cell_w, cell_h);
+                drawText(pixels, stride, width, height, font, allocator, t, wx + 4, wy, 0xff11111b, cell_w, cell_h);
             }
         },
         .button => {
@@ -236,14 +291,14 @@ fn renderWidget(
                 const btn_w = @as(u32, @intCast(lbl.len + 2)) * cell_w;
 
                 fillPixelRect(pixels, stride, width, height, wx, wy - 2, btn_w, cell_h + 4, btn_bg);
-                drawText(pixels, stride, width, height, lbl, wx + @as(i32, @intCast(cell_w / 2)), wy, btn_fg, cell_w, cell_h);
+                drawText(pixels, stride, width, height, font, allocator, lbl, wx + @as(i32, @intCast(cell_w / 2)), wy, btn_fg, cell_w, cell_h);
             }
         },
         .box => {
             var child_x = wx;
             for (w.children) |child| {
                 const child_w: i32 = if (child.label) |l| @intCast((l.len + 3) * cell_w) else @intCast(12 * cell_w);
-                renderWidget(pixels, stride, width, height, child, child_x, wy, avail_w, cell_w, cell_h);
+                renderWidget(pixels, stride, width, height, child, child_x, wy, avail_w, cell_w, cell_h, font, allocator);
                 child_x += child_w + @as(i32, @intCast(w.gap * cell_w));
             }
         },
@@ -251,7 +306,7 @@ fn renderWidget(
             var row_y = wy;
             var h_x = wx;
             for (w.headers) |h| {
-                drawText(pixels, stride, width, height, h, h_x, row_y, 0xffa6adc8, cell_w, cell_h);
+                drawText(pixels, stride, width, height, font, allocator, h, h_x, row_y, 0xffa6adc8, cell_w, cell_h);
                 h_x += @as(i32, @intCast(12 * cell_w));
             }
             row_y += @as(i32, @intCast(cell_h + 2));
@@ -264,7 +319,7 @@ fn renderWidget(
                 }
                 const cell_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
                 for (row) |cell_txt| {
-                    drawText(pixels, stride, width, height, cell_txt, c_x, row_y, cell_fg, cell_w, cell_h);
+                    drawText(pixels, stride, width, height, font, allocator, cell_txt, c_x, row_y, cell_fg, cell_w, cell_h);
                     c_x += @as(i32, @intCast(12 * cell_w));
                 }
                 row_y += @as(i32, @intCast(cell_h + 2));
@@ -278,7 +333,7 @@ fn renderWidget(
                     fillPixelRect(pixels, stride, width, height, wx - 4, item_y - 2, avail_w + 8, cell_h + 2, 0xff45475a);
                 }
                 const item_fg: u32 = if (is_selected) 0xff89dceb else 0xffcdd6f4;
-                drawText(pixels, stride, width, height, item, wx, item_y, item_fg, cell_w, cell_h);
+                drawText(pixels, stride, width, height, font, allocator, item, wx, item_y, item_fg, cell_w, cell_h);
                 item_y += @as(i32, @intCast(cell_h + 2));
             }
         },

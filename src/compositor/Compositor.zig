@@ -79,6 +79,7 @@ pub const Compositor = struct {
         cursor_y: i32,
         cell_w: u32,
         cell_h: u32,
+        font: ?*@import("../Font.zig"),
     ) void {
         if (!self.hasActiveOverlays()) return;
 
@@ -94,7 +95,7 @@ pub const Compositor = struct {
         for (self.scene.layers.items) |layer| {
             if (!layer.visible) continue;
             const l_rect = scene_mod.Scene.computeLayerRect(layer, width, height, cursor_x, cursor_y, cell_w, cell_h);
-            rasterizer.renderLayer(pixels, stride, width, height, layer, l_rect, cell_w, cell_h);
+            rasterizer.renderLayer(pixels, stride, width, height, layer, l_rect, cell_w, cell_h, font, self.allocator);
         }
     }
 };
@@ -127,7 +128,7 @@ test "Compositor scene creation and rendering" {
     try std.testing.expect(comp.hasActiveOverlays());
     try std.testing.expect(comp.hasActiveModal());
 
-    comp.renderOverlays(fb, 800, 800, 600, 100, 100, 8, 16);
+    comp.renderOverlays(fb, 800, 800, 600, 100, 100, 8, 16, null);
 
     // Verify backdrop was dimmed (non-zero alpha)
     try std.testing.expect(fb[0] != 0);
@@ -199,5 +200,5 @@ test "Compositor demo modal JSON parsing and rendering" {
     defer allocator.free(fb);
     @memset(fb, 0xff1e1e2e);
 
-    comp.renderOverlays(fb, 800, 800, 600, 100, 100, 13, 29);
+    comp.renderOverlays(fb, 800, 800, 600, 100, 100, 13, 29, null);
 }

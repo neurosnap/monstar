@@ -5002,6 +5002,7 @@ fn commitFinishedFrame(self: *App, buffer: *Window.Buffer) void {
             cursor_y,
             self.font.cell_width,
             self.font.cell_height,
+            &self.font,
         );
     }
 
