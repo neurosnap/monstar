@@ -931,6 +931,19 @@
         }
       }
     },
+    "UnderlineStyle": {
+      "type": "string",
+      "enum": [
+        "none",
+        "single",
+        "double",
+        "curly",
+        "dotted",
+        "dashed"
+      ],
+      "default": "none",
+      "description": "Underline stroke rendering style"
+    },
     "WidgetStyle": {
       "type": "object",
       "properties": {
@@ -960,9 +973,63 @@
           "type": "boolean",
           "default": false
         },
-        "underline": {
+        "strikethrough": {
           "type": "boolean",
           "default": false
+        },
+        "underline": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/UnderlineStyle"
+            }
+          ],
+          "default": false
+        },
+        "underline_color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Underline stroke color hex or semantic theme token"
+        },
+        "font_family": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "mono",
+            "proportional",
+            null
+          ],
+          "default": "mono",
+          "description": "Font family category"
+        }
+      }
+    },
+    "TextSpan": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text span string content"
+        },
+        "style": {
+          "$ref": "#/$defs/WidgetStyle",
+          "description": "Styling attributes for this text span"
+        },
+        "link": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Hyperlink URL destination (e.g. https://... or file:///...)"
         }
       }
     },
@@ -1108,6 +1175,16 @@
             "null"
           ],
           "description": "Alias for text content"
+        },
+        "spans": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/TextSpan"
+          },
+          "description": "Structured rich text spans (replaces raw ANSI escape formatting)"
         },
         "title": {
           "type": [

@@ -534,11 +534,46 @@ If a client attempts to use a disabled or unauthorized capability, the server em
 
 ---
 
-## 7. Theming & Style Tokens
+## 7. Theming, Styling & Structured Rich Text
 
-To harmonize application intent with user color schemes and accessibility preferences, OTCP supports a cascading styling model:
+Native OTCP **relies 100% on structured JSON** for all in-text styling, colors, text emphasis, underlines, and hyperlinks. Native declarative widgets and layers do **not** use or parse in-band ANSI escape codes (`\x1b[...m` / `OSC 8`), ensuring strict type-safety, automatic theme switching, robust hyperlink handling, and native accessibility.
 
-### 7.1 Semantic Theme Tokens
+### 7.1 Structured Rich Text Spans (`spans`)
+Text-bearing widgets (`text`, `button`, `list`, `table`) support an array of structured **`spans`** in place of flat strings:
+
+```json
+{
+  "type": "text",
+  "spans": [
+    {
+      "text": "Error: ",
+      "style": { "fg": "theme.accent.danger", "bold": true }
+    },
+    {
+      "text": "Failed to connect to cluster at "
+    },
+    {
+      "text": "us-central1-a",
+      "style": {
+        "fg": "theme.accent.primary",
+        "underline": "curly",
+        "underline_color": "theme.accent.danger"
+      },
+      "link": "https://console.cloud.google.com/kubernetes/clusters"
+    }
+  ]
+}
+```
+
+#### Span Style Properties:
+- **`fg` / `bg`** (`string`, optional): Color hex string (`"#89b4fa"`) or dynamic semantic theme token (`"theme.accent.primary"`).
+- **`bold` / `dim` / `italic` / `strikethrough`** (`boolean`, optional): Text attribute flags.
+- **`underline`** (`boolean` | `string`, optional): `"none"` | `"single"` | `"double"` | `"curly"` | `"dotted"` | `"dashed"`.
+- **`underline_color`** (`string`, optional): Independent color hex or theme token for underline strokes.
+- **`link`** (`string`, optional): Clickable hyperlink target URL (e.g. `"https://..."` or `"file:///..."`).
+- **`font_family`** (`string`, optional): `"mono"` | `"proportional"`.
+
+### 7.2 Semantic Theme Tokens
 Color and style fields accept either explicit hex strings (`"#89b4fa"`) or standard **Semantic Tokens** resolved dynamically by the terminal against the active user palette:
 - **Surfaces**: `theme.bg.base`, `theme.bg.surface`, `theme.bg.elevated`
 - **Typography**: `theme.fg.primary`, `theme.fg.muted`
@@ -546,7 +581,7 @@ Color and style fields accept either explicit hex strings (`"#89b4fa"`) or stand
 - **Accents**: `theme.accent.primary`, `theme.accent.danger`, `theme.accent.warning`, `theme.accent.success`
 - **ANSI Palette**: `ansi.<name>` (e.g., `ansi.red`, `ansi.bright_cyan`)
 
-### 7.2 Cascading Priority & User Customization
+### 7.3 Cascading Priority & Automatic Theme Switching
 Visual attributes are resolved in a clear cascading priority:
 1. **Compositor Base Defaults**: Built-in fallbacks (e.g. rounded borders, 50% backdrop dim).
 2. **Application Semantic Tokens**: App requests `bg: "theme.bg.surface"`, `variant: "danger"`.
