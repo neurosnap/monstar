@@ -68,6 +68,51 @@ When an OTCP-compliant terminal emulator spawns a child process or shell, it MUS
 ### 3.2 Security & Permissions
 - Sockets MUST be created with restricted file permissions (`0700` / `0600`), owned by the user's UID/GID.
 
+### 3.3 Remote Transport over SSH
+When sessions run over SSH, the OTCP transport is preserved out-of-band via OpenSSH Unix domain socket forwarding:
+- **Remote Forwarding (`RemoteForward` / `-R`)**: The local emulator socket `$GTTY_SOCK` is forwarded to a dedicated remote path (e.g. `/tmp/gtty_$USER.sock` or `$XDG_RUNTIME_DIR/gtty.sock`).
+- **Socket Unlinking**: Sockets MUST be configured with `StreamLocalBindUnlink yes` to permit clean socket rebinding across reconnects.
+- **Remote Environment**: The remote session MUST export `GTTY_SOCK` pointing to the forwarded socket path.
+- **Client Architecture**: Remote applications write standard JSON-RPC 2.0 requests to the remote socket path. The remote host requires no display server, graphics stack, or compositor daemon.
+
+```ssh_config
+# ~/.ssh/config snippet for OTCP Socket Forwarding:
+Host *
+    RemoteForward /tmp/gtty_%u.sock /tmp/gtty_%p.sock
+    StreamLocalBindUnlink yes
+```
+
+### 3.4 Out-of-Band Remote Execution (SSH Multiplexing)
+For terminal-native capabilities built into the local emulator that operate on remote filesystems (e.g., built-in fuzzy file finder, live grep, git status inspection):
+- **Zero Remote Daemons**: The local terminal emulator executes remote queries (`fd`, `grep`, `find`) out-of-band using OpenSSH connection multiplexing (`ControlMaster` / `ControlPath`).
+- **PTY Stream Isolation**: Multiplexed queries execute over secondary SSH channels, ensuring 0 byte pollution or desynchronization in the active user shell.
+- **Local Scoring & Presentation**: Keystrokes, fuzzy scoring algorithms, and 60 FPS widget rendering execute locally with sub-millisecond responsiveness.
+
+```ssh_config
+# Recommended ~/.ssh/config for OTCP & ControlMaster Multiplexing:
+Host *
+    # Out-of-Band Unix Socket Forwarding
+    RemoteForward /tmp/gtty_%u.sock %d/gtty_%p.sock
+    StreamLocalBindUnlink yes
+
+    # OpenSSH Multiplexing (Zero-Daemon Remote Execution)
+    ControlMaster auto
+    ControlPath ~/.ssh/sockets/%r@%h:%p.sock
+    ControlPersist 10m
+```
+
+### 3.5 Client Capability Detection & Graceful Degradation
+CLI tools and scripts SHOULD check for the existence and socket type of `$GTTY_SOCK` before emitting OTCP messages. If `$GTTY_SOCK` is absent or unreachable, tools MUST degrade gracefully to standard TTY/ANSI prompts without erroring.
+```bash
+if [ -S "${GTTY_SOCK:-}" ]; then
+    # Render native OTCP overlay modal
+    monstar ui dialog confirm "Proceed with deployment?"
+else
+    # Fallback to standard terminal prompt
+    read -p "Proceed with deployment? (y/n) " yn
+fi
+```
+
 ---
 
 ## 4. Protocol Framing & RPC Conventions

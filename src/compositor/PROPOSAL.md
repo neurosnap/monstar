@@ -236,7 +236,70 @@ Monstar dispatches JSON-RPC 2.0 notifications back to connected clients over `$G
 
 ---
 
-## 6. Current Implementation State
+## 6. Remote SSH Architecture & Out-of-Band Transport
+
+A primary design requirement of Monstar is seamless operation across SSH sessions without compromising stream isolation or resorting to in-band escape sequences.
+
+```
+┌─────────────────────────────────────────┐               ┌─────────────────────────────────────────┐
+│       REMOTE HOST (SSH Server)          │               │        LOCAL HOST (User Desktop)        │
+│                                         │               │                                         │
+│  Remote CLI / Tool (e.g. monstar ui)    │               │  Monstar Display Server & Compositor    │
+│  • Reads/writes $GTTY_SOCK              │               │  • Owns Wayland window & wl_shm buffers │
+│  • Traverses remote disk (fd/grep)      │               │  • Listens on local /tmp/gtty_<pid>.sock│
+│                 │                       │  SSH Tunnel   │                 ▲                       │
+│                 ▼                       │ (RemoteForward│                 │                       │
+│       /tmp/gtty_<user>.sock ────────────┼────── -R ─────┼─────────────────┘                       │
+│                                         │               │                                         │
+│  Remote Shell (bash / zsh)              │               │                                         │
+│  • PTY I/O Stream ──────────────────────┼── (PTY bytes) ┼─> Ghostty VT PageList Engine            │
+└─────────────────────────────────────────┘               └─────────────────────────────────────────┘
+```
+
+### 1. OpenSSH StreamLocal Forwarding
+- **Socket Bridging**: When connecting to remote hosts, the out-of-band Unix domain socket is forwarded using OpenSSH's native stream forwarding:
+  ```bash
+  ssh -R /tmp/gtty_$USER.sock:$GTTY_SOCK -o StreamLocalBindUnlink=yes user@remote-host
+  ```
+- **Declarative `~/.ssh/config` Entry**:
+  ```ssh_config
+  Host *
+      # Automatically forward local GTTY socket to the remote user session
+      RemoteForward /tmp/gtty_%u.sock /tmp/gtty_%p.sock
+      StreamLocalBindUnlink yes
+  ```
+- **Remote Environment**: `GTTY_SOCK=/tmp/gtty_$USER.sock` is exported on the remote session.
+- **Zero Remote Display Server**: The remote host runs **no** Wayland, **no** graphics libraries, and **no** compositor daemons. Remote CLI scripts merely open the forwarded Unix socket and exchange standard JSON-RPC 2.0 messages.
+
+### 2. Built-in Tools via SSH Multiplexing (`ControlMaster`)
+For terminal-native features built into the local Monstar binary (e.g. built-in fuzzy file finder, live grep, git status):
+- **Local Presentation**: Keyboard input handling, 60 FPS animation, and fuzzy scoring occur **locally in Zig** with zero network roundtrip latency per keystroke.
+- **Remote Execution without Daemons**: Monstar executes out-of-band remote file queries (`fd` / `find`) across the existing SSH connection using OpenSSH multiplexing (`ControlMaster` / `ControlPath`):
+  ```bash
+  ssh -S ~/.ssh/sockets/%r@%h:%p.sock user@remote-host "fd --color=never ."
+  ```
+- **Zero PTY Pollution**: Remote queries run completely out-of-band on a multiplexed SSH channel without printing into or desynchronizing the active user shell.
+
+#### Example `~/.ssh/config` Configuration:
+```ssh_config
+Host *
+    # OTCP Out-of-Band Unix Socket Forwarding
+    RemoteForward /tmp/gtty_%u.sock %d/gtty_%p.sock
+    StreamLocalBindUnlink yes
+
+    # Connection Multiplexing for Zero-Daemon Remote Queries
+    ControlMaster auto
+    ControlPath ~/.ssh/sockets/%r@%h:%p.sock
+    ControlPersist 10m
+```
+
+### 3. Command Palette Execution
+- When the user selects a shell command or script from the local Command Palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>), Monstar injects the command string into the active PTY input stream via `terminal.write`.
+- When focused on an SSH session, the keystrokes travel across the SSH connection and execute in the remote shell transparently, requiring no prior GTTY integration from base shell programs.
+
+---
+
+## 7. Current Implementation State
 
 | Component | Status | Details |
 | :--- | :--- | :--- |
@@ -253,7 +316,7 @@ Monstar dispatches JSON-RPC 2.0 notifications back to connected clients over `$G
 
 ---
 
-## 7. How to Run & Verify
+## 8. How to Run & Verify
 
 1. **Launch Monstar**:
    ```bash
@@ -273,12 +336,15 @@ Monstar dispatches JSON-RPC 2.0 notifications back to connected clients over `$G
 
 ---
 
-## 8. Next Horizons
+## 9. Next Horizons
 
 1. **Client SDKs & Standalone CLI Helpers**:
    - Provide lightweight zero-dependency CLI utilities (`monstar-dialog`, `monstar-select`, `monstar-input`) for bash/zsh scripts.
    - Publish client libraries in Rust, Go, Python, and C.
-2. **Smooth Animations**:
+2. **Transparent `monstar ssh` Wrapper**:
+   - Automated OpenSSH `-R` socket forwarding, terminfo installation, and `ControlMaster` multiplexing setup.
+3. **Smooth Animations**:
    - Add spring-physics / easing transitions for modal entry/exit and popup opacity fade-in.
-3. **Standardization & Emulator Porting**:
+4. **Standardization & Emulator Porting**:
    - Evangelize the Open Terminal Compositing Protocol (OTCP) to other terminal emulator maintainers (Ghostty, Foot, WezTerm, Alacritty, Kitty).
+
