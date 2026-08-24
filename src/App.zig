@@ -4650,10 +4650,13 @@ fn onKey(self: *App, evdev_keycode: u32, action: vt.input.KeyAction) void {
             if (action == .press or action == .repeat) {
                 const act = comp.handleKeyEvent(event.key, event.utf8, event.mods);
                 switch (act) {
-                    .none => {},
+                    .none => {
+                        if (comp.hasActiveModal()) return;
+                    },
                     .redraw, .dismiss, .click, .change => {
                         self.async_force_full = true;
                         self.needs_redraw = true;
+                        return;
                     },
                     .submit => |s| {
                         if (std.mem.eql(u8, s.layer_id, "command_palette")) {
@@ -4662,10 +4665,12 @@ fn onKey(self: *App, evdev_keycode: u32, action: vt.input.KeyAction) void {
                         }
                         self.async_force_full = true;
                         self.needs_redraw = true;
+                        return;
                     },
                 }
+            } else {
+                if (comp.hasActiveModal()) return;
             }
-            return;
         }
     }
 
@@ -5174,9 +5179,9 @@ fn commitHeldFrame(self: *App) void {
 /// entry. Commit failures are fatal: the surface is unusable.
 fn commitFinishedFrame(self: *App, buffer: *Window.Buffer) void {
     if (self.compositor) |*comp| {
-        const cursor = self.render_state.cursor;
-        const cursor_x: i32 = if (cursor.viewport) |vp| @intCast(vp.x * self.font.cell_width) else 0;
-        const cursor_y: i32 = if (cursor.viewport) |vp| @intCast(vp.y * self.font.cell_height) else 0;
+        const screen = self.term.screens.active;
+        const cursor_x: i32 = @as(i32, @intCast(screen.cursor.x)) * @as(i32, @intCast(self.font.cell_width));
+        const cursor_y: i32 = @as(i32, @intCast(screen.cursor.y)) * @as(i32, @intCast(self.font.cell_height));
         comp.renderOverlays(
             buffer.pixels(),
             buffer.width,

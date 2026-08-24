@@ -51,45 +51,57 @@ fn printUiUsage() void {
     _ = linux.write(std.posix.STDOUT_FILENO, usage.ptr, usage.len);
 }
 
-fn connectGtty(allocator: std.mem.Allocator) !posix.fd_t {
-    var sock_path: ?[]const u8 = null;
-    if (std.c.getenv("GTTY_SOCK")) |env_ptr| {
-        sock_path = std.mem.span(env_ptr);
-    }
-
-    var path_buf: [128]u8 = undefined;
-    if (sock_path == null) {
-        // Fallback: check parent pid / current pid sockets
-        const ppid = linux.getppid();
-        const test_path = std.fmt.bufPrintZ(&path_buf, "/tmp/gtty_{d}.sock", .{ppid}) catch return error.SocketNotFound;
-        const rc = linux.access(test_path.ptr, 0);
-        if (linux.errno(rc) == .SUCCESS) {
-            sock_path = test_path;
-        } else {
-            return error.GttySockNotSet;
-        }
-    }
-
+fn tryConnectSocket(path: []const u8) ?posix.fd_t {
     var un: posix.sockaddr.un = .{
         .family = posix.AF.UNIX,
         .path = [_]u8{0} ** 108,
     };
-    const sp = sock_path.?;
-    const copy_len = @min(sp.len, un.path.len - 1);
-    @memcpy(un.path[0..copy_len], sp[0..copy_len]);
+    const copy_len = @min(path.len, un.path.len - 1);
+    @memcpy(un.path[0..copy_len], path[0..copy_len]);
     un.path[copy_len] = 0;
 
     const sock_rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM, 0);
-    if (linux.errno(sock_rc) != .SUCCESS) return error.SocketFailed;
+    if (linux.errno(sock_rc) != .SUCCESS) return null;
     const fd: posix.fd_t = @intCast(sock_rc);
-    errdefer _ = linux.close(fd);
 
     const addr_len: posix.socklen_t = @intCast(@offsetOf(posix.sockaddr.un, "path") + copy_len + 1);
     const conn_rc = linux.connect(fd, @ptrCast(&un), addr_len);
-    if (linux.errno(conn_rc) != .SUCCESS) return error.ConnectFailed;
-
-    _ = allocator;
+    if (linux.errno(conn_rc) != .SUCCESS) {
+        _ = linux.close(fd);
+        return null;
+    }
     return fd;
+}
+
+fn connectGtty(allocator: std.mem.Allocator) !posix.fd_t {
+    _ = allocator;
+    // 1. Try GTTY_SOCK environment variable
+    if (std.c.getenv("GTTY_SOCK")) |env_ptr| {
+        const sock_path = std.mem.span(env_ptr);
+        if (tryConnectSocket(sock_path)) |fd| return fd;
+    }
+
+    // 2. Try parent PID socket
+    var path_buf: [128]u8 = undefined;
+    const ppid = linux.getppid();
+    if (std.fmt.bufPrintZ(&path_buf, "/tmp/gtty_{d}.sock", .{ppid})) |ppid_path| {
+        if (tryConnectSocket(ppid_path)) |fd| return fd;
+    } else |_| {}
+
+    // 3. Scan /tmp for any active gtty_*.sock
+    if (std.c.opendir("/tmp")) |dir| {
+        defer _ = std.c.closedir(dir);
+        while (std.c.readdir(dir)) |entry| {
+            const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.name)));
+            if (std.mem.startsWith(u8, name, "gtty_") and std.mem.endsWith(u8, name, ".sock")) {
+                if (std.fmt.bufPrintZ(&path_buf, "/tmp/{s}", .{name})) |test_path| {
+                    if (tryConnectSocket(test_path)) |fd| return fd;
+                } else |_| {}
+            }
+        }
+    }
+
+    return error.GttySockNotSet;
 }
 
 fn runDialog(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
@@ -277,6 +289,8 @@ fn runClear(allocator: std.mem.Allocator) !void {
 fn sendClear(fd: posix.fd_t) void {
     const req = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"layer.clear\"}\n";
     _ = linux.write(fd, req.ptr, req.len);
+    var ack_buf: [256]u8 = undefined;
+    _ = linux.read(fd, &ack_buf, ack_buf.len);
 }
 
 fn runAutocomplete(allocator: std.mem.Allocator) !void {
@@ -286,8 +300,9 @@ fn runAutocomplete(allocator: std.mem.Allocator) !void {
     const msg = "[Monstar UI] Shell Autocomplete daemon active on $GTTY_SOCK.\n";
     _ = linux.write(std.posix.STDOUT_FILENO, msg.ptr, msg.len);
 
-    var last_prefix: [128]u8 = undefined;
-    var last_len: usize = 0;
+    var last_token_buf: [128]u8 = undefined;
+    var last_token_len: usize = 0;
+    var popup_active = false;
 
     var buf: [4096]u8 = undefined;
 
@@ -304,15 +319,17 @@ fn runAutocomplete(allocator: std.mem.Allocator) !void {
                 if (std.mem.indexOf(u8, body, "\"")) |p_end| {
                     const prefix = body[0..p_end];
                     const token = extractCommandToken(prefix);
-                    if (!std.mem.eql(u8, token, last_prefix[0..last_len])) {
-                        const copy_len = @min(token.len, last_prefix.len);
-                        @memcpy(last_prefix[0..copy_len], token[0..copy_len]);
-                        last_len = copy_len;
+                    if (!std.mem.eql(u8, token, last_token_buf[0..last_token_len])) {
+                        const copy_len = @min(token.len, last_token_buf.len);
+                        @memcpy(last_token_buf[0..copy_len], token[0..copy_len]);
+                        last_token_len = copy_len;
 
-                        if (token.len >= 2) {
+                        if (token.len >= 1) {
                             try renderAutoCompletions(allocator, fd, prefix);
-                        } else {
+                            popup_active = true;
+                        } else if (popup_active) {
                             sendClear(fd);
+                            popup_active = false;
                         }
                     }
                 }
@@ -328,26 +345,45 @@ fn runAutocomplete(allocator: std.mem.Allocator) !void {
                         , .{result_val});
                         defer allocator.free(write_req);
                         _ = linux.write(fd, write_req.ptr, write_req.len);
+                        var ack_buf: [256]u8 = undefined;
+                        _ = linux.read(fd, &ack_buf, ack_buf.len);
                         sendClear(fd);
+                        popup_active = false;
                     }
                 }
             } else if (std.mem.indexOf(u8, resp, "event.dismiss") != null) {
                 sendClear(fd);
+                popup_active = false;
             }
         }
 
-        // Sleep 100ms
-        var req_ts = linux.timespec{ .sec = 0, .nsec = 100 * 1000 * 1000 };
+        // Sleep 40ms
+        var req_ts = linux.timespec{ .sec = 0, .nsec = 40 * 1000 * 1000 };
         _ = linux.nanosleep(&req_ts, null);
     }
 }
 
 fn extractCommandToken(prefix: []const u8) []const u8 {
-    var p = prefix;
-    if (std.mem.lastIndexOfAny(u8, p, "$#>%:\r\n")) |idx| {
-        p = p[idx + 1 ..];
+    var p = std.mem.trim(u8, prefix, " \t\r\n");
+    const prompt_delims = [_][]const u8{
+        "▸",
+        "❯",
+        "➜",
+        "→",
+        "»",
+        "$",
+        "#",
+        ">",
+        "%",
+        "λ",
+        ":",
+    };
+    for (prompt_delims) |delim| {
+        if (std.mem.lastIndexOf(u8, p, delim)) |idx| {
+            p = p[idx + delim.len ..];
+            p = std.mem.trim(u8, p, " \t\r\n");
+        }
     }
-    p = std.mem.trim(u8, p, " \t\r\n");
     return p;
 }
 
@@ -361,25 +397,47 @@ fn renderAutoCompletions(allocator: std.mem.Allocator, fd: posix.fd_t, prefix: [
     // Generate context-aware suggestions
     const suggestions = [_][]const u8{
         "git status",
+        "git diff",
         "git log --oneline --graph",
         "git commit -m \"...\"",
         "git push origin main",
-        "git diff",
+        "git pull origin main",
         "git checkout main",
-        "cargo build --release",
-        "cargo test",
+        "git branch",
+        "git add .",
+        "zig build",
         "zig build test",
         "zig build run",
+        "cargo build --release",
+        "cargo test",
+        "cargo run",
         "monstar ui dialog confirm \"Deploy?\"",
         "monstar ui dialog select \"Pick Branch\"",
         "monstar ui inspect",
+        "monstar ui clear",
+        "ls -la",
+        "top",
     };
 
     var matched: std.ArrayList([]const u8) = .empty;
     defer matched.deinit(allocator);
 
+    var token_lower_buf: [128]u8 = undefined;
+    const token_lower_len = @min(token.len, token_lower_buf.len);
+    for (token[0..token_lower_len], 0..) |c, i| {
+        token_lower_buf[i] = std.ascii.toLower(c);
+    }
+    const token_lower = token_lower_buf[0..token_lower_len];
+
     for (suggestions) |s| {
-        if (std.mem.indexOf(u8, s, token) != null or std.mem.startsWith(u8, s, token)) {
+        var s_lower_buf: [128]u8 = undefined;
+        const s_lower_len = @min(s.len, s_lower_buf.len);
+        for (s[0..s_lower_len], 0..) |c, i| {
+            s_lower_buf[i] = std.ascii.toLower(c);
+        }
+        const s_lower = s_lower_buf[0..s_lower_len];
+
+        if (std.mem.indexOf(u8, s_lower, token_lower) != null or std.mem.startsWith(u8, s_lower, token_lower)) {
             try matched.append(allocator, s);
         }
     }
@@ -408,4 +466,6 @@ fn renderAutoCompletions(allocator: std.mem.Allocator, fd: posix.fd_t, prefix: [
     defer allocator.free(render_req);
 
     _ = linux.write(fd, render_req.ptr, render_req.len);
+    var ack_buf: [256]u8 = undefined;
+    _ = linux.read(fd, &ack_buf, ack_buf.len);
 }
