@@ -14,12 +14,17 @@ const Renderer = @import("Renderer.zig");
 const TerminalLayout = @import("TerminalLayout.zig");
 const Window = @import("Window.zig");
 pub const compositor = @import("compositor/Compositor.zig");
+pub const cli_ui = @import("compositor/cli.zig");
 
 const log = std.log.scoped(.main);
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
+
+    if (args.len > 1 and std.mem.eql(u8, args[1], "ui")) {
+        return cli_ui.run(arena, args[2..]);
+    }
 
     const cli = parseCli(arena, args[1..]) catch |err| switch (err) {
         error.InvalidCli => invalidCli(init),

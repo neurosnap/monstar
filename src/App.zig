@@ -743,7 +743,59 @@ pub fn init(
         activationTokenReady,
         clipboardDevicesChanged,
     );
+
+    if (self.compositor) |*comp| {
+        comp.setDelegate(.{
+            .ctx = self,
+            .inspect_fn = App.inspectTerminalJson,
+            .write_fn = App.writeTerminalPty,
+        });
+    }
+
     return self;
+}
+
+fn inspectTerminalJson(ctx: *anyopaque, alloc: std.mem.Allocator) ?[]const u8 {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    const screen = app.term.screens.active;
+    const cur_x: u16 = screen.cursor.x;
+    const cur_y: u32 = screen.cursor.y;
+    const cur_x_px = @as(i32, @intCast(cur_x)) * @as(i32, @intCast(app.font.cell_width));
+    const cur_y_px = @as(i32, @intCast(cur_y)) * @as(i32, @intCast(app.font.cell_height));
+    const pwd = app.term.getPwd() orelse "";
+
+    // Extract line prefix text up to cursor
+    var line_text: []const u8 = "";
+    if (cur_x > 0) {
+        if (screen.pages.pin(.{ .screen = .{ .x = 0, .y = cur_y } })) |start_pin| {
+            if (screen.pages.pin(.{ .screen = .{ .x = cur_x, .y = cur_y } })) |end_pin| {
+                const sel = vt.Selection.init(start_pin, end_pin, false);
+                if (screen.selectionString(alloc, .{ .sel = sel, .trim = false })) |str| {
+                    line_text = str;
+                } else |_| {}
+            }
+        }
+    }
+
+    return std.fmt.allocPrint(alloc,
+        \\{{"cursor":{{"col":{d},"row":{d},"x_pixel":{d},"y_pixel":{d},"visible":{}}},"grid":{{"cols":{d},"rows":{d}}},"line_prefix":"{s}","cwd":"{s}","active_screen":"{s}"}}
+    , .{
+        cur_x,
+        cur_y,
+        cur_x_px,
+        cur_y_px,
+        true,
+        app.term.cols,
+        app.term.rows,
+        line_text,
+        pwd,
+        if (app.term.screens.active_key == .primary) "primary" else "alternate",
+    }) catch null;
+}
+
+fn writeTerminalPty(ctx: *anyopaque, data: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    _ = app.tryPtyWrite(data);
 }
 
 fn decodePng(alloc: std.mem.Allocator, data: []const u8) vt.sys.DecodeError!vt.sys.Image {
@@ -1682,11 +1734,11 @@ fn openCommandPalette(self: *App) void {
             \\      "id": "command_palette",
             \\      "type": "modal",
             \\      "anchor": "center",
-            \\      "width": 52,
-            \\      "height": 13,
+            \\      "width": 56,
+            \\      "height": 18,
             \\      "style": {
             \\        "border": "rounded",
-            \\        "title": " Command Palette (Esc to close) ",
+            \\        "title": " Monstar Command Palette (Esc to close) ",
             \\        "border_fg": "#89b4fa",
             \\        "bg": "#1e1e2e",
             \\        "shadow": true,
@@ -1706,13 +1758,19 @@ fn openCommandPalette(self: *App) void {
             \\          "margin_top": 1,
             \\          "selected_index": 0,
             \\          "items": [
-            \\            "1. Git: Status",
-            \\            "2. Git: Log Graph",
-            \\            "3. Top: Launch System Monitor",
-            \\            "4. Config: Reload Settings",
-            \\            "5. Font: Increase Size",
-            \\            "6. Font: Decrease Size",
-            \\            "7. Screen: Clear Scrollback"
+            \\            "1. UI: Shell Autocomplete (monstar ui autocomplete)",
+            \\            "2. UI: Confirm Dialog (monstar ui dialog confirm)",
+            \\            "3. UI: Select Menu (monstar ui dialog select)",
+            \\            "4. UI: Input Dialog (monstar ui dialog input)",
+            \\            "5. UI: Inspect Terminal (monstar ui inspect)",
+            \\            "6. UI: Clear Overlays (monstar ui clear)",
+            \\            "7. Git: Status (git status)",
+            \\            "8. Git: Log Graph (git log --graph --oneline)",
+            \\            "9. Top: System Monitor (top)",
+            \\            "10. Config: Reload Settings",
+            \\            "11. Font: Increase Size",
+            \\            "12. Font: Decrease Size",
+            \\            "13. Screen: Clear Scrollback"
             \\          ]
             \\        }
             \\      ]
@@ -1736,13 +1794,19 @@ fn executeBuiltinCommand(self: *App, selected_index: ?usize, value: ?[]const u8)
     _ = value;
     if (selected_index) |idx| {
         switch (idx) {
-            0 => _ = self.tryPtyWrite("git status\n"),
-            1 => _ = self.tryPtyWrite("git log --oneline --graph --decorate -n 15\n"),
-            2 => _ = self.tryPtyWrite("top\n"),
-            3 => self.reloadConfig(),
-            4 => self.adjustRuntimeFontSize(1),
-            5 => self.adjustRuntimeFontSize(-1),
-            6 => {
+            0 => _ = self.tryPtyWrite("monstar ui autocomplete\n"),
+            1 => _ = self.tryPtyWrite("monstar ui dialog confirm \"Deploy to production?\" --danger\n"),
+            2 => _ = self.tryPtyWrite("monstar ui dialog select \"Select Git Branch\" --items \"main,staging,develop,feature/otcp\"\n"),
+            3 => _ = self.tryPtyWrite("monstar ui dialog input \"Enter commit message:\" --placeholder \"feat: ...\"\n"),
+            4 => _ = self.tryPtyWrite("monstar ui inspect\n"),
+            5 => _ = self.tryPtyWrite("monstar ui clear\n"),
+            6 => _ = self.tryPtyWrite("git status\n"),
+            7 => _ = self.tryPtyWrite("git log --oneline --graph --decorate -n 15\n"),
+            8 => _ = self.tryPtyWrite("top\n"),
+            9 => self.reloadConfig(),
+            10 => self.adjustRuntimeFontSize(1),
+            11 => self.adjustRuntimeFontSize(-1),
+            12 => {
                 self.term.screens.active.pages.scroll(.active);
                 self.clearSelection();
                 self.needs_redraw = true;

@@ -60,6 +60,12 @@ pub const Compositor = struct {
         return false;
     }
 
+    pub fn setDelegate(self: *Compositor, del: server_mod.TerminalDelegate) void {
+        if (self.server) |*srv| {
+            srv.setDelegate(del);
+        }
+    }
+
     pub fn hasActiveOverlays(self: *const Compositor) bool {
         for (self.scene.layers.items) |l| {
             if (l.visible) return true;

@@ -5,12 +5,19 @@ const scene_mod = @import("scene.zig");
 const parser = @import("parser.zig");
 const Scene = scene_mod.Scene;
 
+pub const TerminalDelegate = struct {
+    ctx: *anyopaque,
+    inspect_fn: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) ?[]const u8,
+    write_fn: *const fn (ctx: *anyopaque, data: []const u8) void,
+};
+
 pub const Server = struct {
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     server_fd: posix.fd_t,
     epoll_fd: posix.fd_t,
     client_fds: std.ArrayList(posix.fd_t),
+    delegate: ?TerminalDelegate = null,
     dirty: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, pid: i32) !Server {
@@ -58,6 +65,7 @@ pub const Server = struct {
             .server_fd = socket_fd,
             .epoll_fd = epoll_fd,
             .client_fds = .empty,
+            .delegate = null,
             .dirty = false,
         };
     }
@@ -168,6 +176,34 @@ pub const Server = struct {
                     scene.clear();
                     self.dirty = true;
                     self.sendSuccess(fd, id_num);
+                } else if (std.mem.eql(u8, method, "terminal.inspect")) {
+                    if (self.delegate) |del| {
+                        if (del.inspect_fn(del.ctx, self.allocator)) |json_res| {
+                            defer self.allocator.free(json_res);
+                            var resp_buf: [4096]u8 = undefined;
+                            if (id_num) |req_id| {
+                                if (std.fmt.bufPrint(&resp_buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}\n", .{ req_id, json_res })) |msg_str| {
+                                    _ = linux.write(fd, msg_str.ptr, msg_str.len);
+                                } else |_| {}
+                            }
+                        } else {
+                            self.sendError(fd, id_num, "Inspection unavailable");
+                        }
+                    } else {
+                        self.sendError(fd, id_num, "No delegate registered");
+                    }
+                } else if (std.mem.eql(u8, method, "terminal.write")) {
+                    const params_val = switch (root) {
+                        .object => |obj| obj.get("params"),
+                        else => null,
+                    };
+                    const data_val = if (params_val != null and params_val.? == .object) params_val.?.object.get("data") else null;
+                    if (data_val != null and data_val.? == .string and self.delegate != null) {
+                        self.delegate.?.write_fn(self.delegate.?.ctx, data_val.?.string);
+                        self.sendSuccess(fd, id_num);
+                    } else {
+                        self.sendError(fd, id_num, "Invalid terminal.write params");
+                    }
                 } else {
                     self.sendSuccess(fd, id_num);
                 }
@@ -175,6 +211,10 @@ pub const Server = struct {
                 self.sendSuccess(fd, id_num);
             }
         }
+    }
+
+    pub fn setDelegate(self: *Server, del: TerminalDelegate) void {
+        self.delegate = del;
     }
 
     fn sendSuccess(self: *Server, fd: posix.fd_t, id: ?u64) void {

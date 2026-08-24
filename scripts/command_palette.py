@@ -16,6 +16,12 @@ import subprocess
 import glob
 
 COMMANDS = [
+    {"id": "ui_autocomplete", "title": "UI: Shell Autocomplete Daemon", "cmd": "./zig-out/bin/monstar ui autocomplete"},
+    {"id": "ui_confirm", "title": "UI: Confirm Dialog", "cmd": "./zig-out/bin/monstar ui dialog confirm \"Deploy to production?\" --danger"},
+    {"id": "ui_select", "title": "UI: Select Branch Dialog", "cmd": "./zig-out/bin/monstar ui dialog select \"Select Git Branch\" --items \"main,staging,develop,feature/otcp\""},
+    {"id": "ui_input", "title": "UI: Input Dialog", "cmd": "./zig-out/bin/monstar ui dialog input \"Enter commit message:\" --placeholder \"feat: ...\""},
+    {"id": "ui_inspect", "title": "UI: Inspect Base Screen", "cmd": "./zig-out/bin/monstar ui inspect"},
+    {"id": "ui_clear", "title": "UI: Clear Overlays", "cmd": "./zig-out/bin/monstar ui clear"},
     {"id": "git_status", "title": "Git: Status", "cmd": "git status"},
     {"id": "git_log", "title": "Git: Log Graph", "cmd": "git log --oneline --graph --decorate -n 15"},
     {"id": "git_diff", "title": "Git: Diff", "cmd": "git diff"},
@@ -23,8 +29,6 @@ COMMANDS = [
     {"id": "sys_disk", "title": "System: Disk Usage", "cmd": "df -h"},
     {"id": "sys_uname", "title": "System: Kernel & OS Info", "cmd": "uname -a"},
     {"id": "monstar_test", "title": "Monstar: Run Test Suite", "cmd": "zig build test --summary all"},
-    {"id": "monstar_dialog", "title": "Monstar: Show Modal Dialog Demo", "cmd": "python3 scripts/demo_overlay.py modal"},
-    {"id": "monstar_popup", "title": "Monstar: Show Autocomplete Popup", "cmd": "python3 scripts/demo_overlay.py popup"},
 ]
 
 def find_socket():
