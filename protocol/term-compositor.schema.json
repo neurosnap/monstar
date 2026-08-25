@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rockorager/monstar/main/protocol/term-compositor.schema.json",
   "title": "Open Terminal Compositing Protocol (OTCP) Schema",
-  "description": "Formal protocol schema defining interfaces, requests, events, widgets, capabilities, and accessibility for out-of-band terminal compositors.",
+  "description": "Formal protocol schema defining interfaces, requests, events, surfaces, layers, and capabilities for out-of-band terminal compositors.",
   "version": "1.0.0",
   "type": "object",
   "required": [
@@ -293,7 +293,7 @@
       "description": "Factory interface for creating composited surfaces and overlay layers.",
       "requests": {
         "create_surface": {
-          "description": "Instantiates a new independent display surface (for multiplexer panes, standalone streams, or programmatic grids).",
+          "description": "Instantiates a new independent display surface (for multiplexer panes, standalone streams, programmatic grids, or raster pixel graphics).",
           "args": {
             "type": "object",
             "required": [
@@ -331,7 +331,7 @@
           }
         },
         "create_layer": {
-          "description": "Instantiates a new overlay layer.",
+          "description": "Instantiates a new overlay layer shell.",
           "args": {
             "type": "object",
             "required": [
@@ -348,7 +348,7 @@
               },
               "parent_surface": {
                 "type": "string",
-                "description": "Optional parent tc_surface ID to scope and clip this layer to"
+                "description": "Optional parent tc_surface ID to scope positioning and clipping to"
               }
             }
           }
@@ -357,7 +357,7 @@
       "events": {}
     },
     "tc_surface": {
-      "description": "Represents an independent rendering surface (sandboxed legacy PTY, text stream, or 2D grid matrix).",
+      "description": "Represents an independent rendering surface (sandboxed legacy PTY, text stream, 2D grid matrix, or pixel graphic).",
       "requests": {
         "resize": {
           "description": "Requests geometry resizing for this surface.",
@@ -398,6 +398,201 @@
           "args": {
             "type": "object",
             "properties": {}
+          }
+        },
+        "put_cells": {
+          "description": "Updates character cells directly in a grid surface.",
+          "args": {
+            "type": "object",
+            "required": [
+              "x",
+              "y",
+              "cells"
+            ],
+            "properties": {
+              "x": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Starting column index (0-based)"
+              },
+              "y": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Starting row index (0-based)"
+              },
+              "cells": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Cell"
+                },
+                "description": "Array of styled character cells"
+              }
+            }
+          }
+        },
+        "write_text": {
+          "description": "Appends text lines to a stream surface.",
+          "args": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Text payload to append"
+              }
+            }
+          }
+        },
+        "set_buffer": {
+          "description": "Uploads raster image or bitmap data to a pixel surface.",
+          "args": {
+            "type": "object",
+            "required": [
+              "format",
+              "data"
+            ],
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "png",
+                  "jpeg",
+                  "webp",
+                  "rgba32",
+                  "shm"
+                ],
+                "description": "Image encoding format or shm buffer reference"
+              },
+              "data": {
+                "type": "string",
+                "description": "Base64-encoded image data or shm segment token"
+              },
+              "width_px": {
+                "type": "integer",
+                "description": "Pixel width (required for raw rgba32)"
+              },
+              "height_px": {
+                "type": "integer",
+                "description": "Pixel height (required for raw rgba32)"
+              },
+              "stride_bytes": {
+                "type": "integer",
+                "description": "Row stride in bytes for raw pixel formats"
+              }
+            }
+          }
+        },
+        "set_anchor": {
+          "description": "Anchors this surface as a subsurface of another surface (e.g. pinning a pixel image to a parent grid cell or stream line).",
+          "args": {
+            "type": "object",
+            "required": [
+              "parent_surface",
+              "mode"
+            ],
+            "properties": {
+              "parent_surface": {
+                "type": "string",
+                "description": "Target parent tc_surface ID"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "cell_relative",
+                  "stream_line",
+                  "cursor_relative",
+                  "absolute_cells"
+                ],
+                "description": "Positioning anchor coordinate mode"
+              },
+              "col": {
+                "type": "integer",
+                "default": 0,
+                "description": "0-indexed character column offset"
+              },
+              "row": {
+                "type": "integer",
+                "default": 0,
+                "description": "0-indexed character row offset"
+              },
+              "line_id": {
+                "type": [
+                  "string",
+                  "integer"
+                ],
+                "description": "Logical line ID or index within a stream surface"
+              },
+              "z_index": {
+                "type": "integer",
+                "default": 0,
+                "description": "Relative stacking order above/below parent content"
+              },
+              "offset_x_px": {
+                "type": "integer",
+                "default": 0,
+                "description": "Subpixel fine-tuning X offset in physical pixels"
+              },
+              "offset_y_px": {
+                "type": "integer",
+                "default": 0,
+                "description": "Subpixel fine-tuning Y offset in physical pixels"
+              }
+            }
+          }
+        },
+        "set_scaling": {
+          "description": "Configures scaling and aspect ratio preservation for pixel surfaces.",
+          "args": {
+            "type": "object",
+            "properties": {
+              "scale_mode": {
+                "type": "string",
+                "enum": [
+                  "fit",
+                  "fill",
+                  "stretch",
+                  "pixel_exact"
+                ],
+                "default": "fit",
+                "description": "Image scaling behavior within allocated cell bounds"
+              },
+              "width_cells": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Target bounding width in character cells"
+              },
+              "height_cells": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Target bounding height in character cells"
+              }
+            }
+          }
+        },
+        "set_a11y": {
+          "description": "Configures accessibility metadata and plain-text fallback representations for graphical surfaces.",
+          "args": {
+            "type": "object",
+            "required": [
+              "alt_text"
+            ],
+            "properties": {
+              "alt_text": {
+                "type": "string",
+                "description": "Mandatory spoken description announced by screen readers"
+              },
+              "fallback_text": {
+                "type": "string",
+                "description": "Plain text representation copied when text selections intersect this surface (e.g. [Image: plot.png])"
+              },
+              "role": {
+                "type": "string",
+                "default": "image",
+                "description": "Accessibility role (e.g. image, chart, graphic)"
+              }
+            }
           }
         },
         "destroy": {
@@ -492,7 +687,7 @@
       }
     },
     "tc_layer": {
-      "description": "Represents an active or staging overlay layer.",
+      "description": "Represents an active or staging overlay layer shell.",
       "requests": {
         "set_anchor": {
           "description": "Defines positioning strategy relative to parent surface or terminal layout.",
@@ -512,12 +707,12 @@
               "offset_x": {
                 "type": "integer",
                 "default": 0,
-                "description": "Character cell offset (or pixel offset when flagged)"
+                "description": "Character cell offset"
               },
               "offset_y": {
                 "type": "integer",
                 "default": 0,
-                "description": "Character cell offset (or pixel offset when flagged)"
+                "description": "Character cell offset"
               }
             }
           }
@@ -543,21 +738,38 @@
           }
         },
         "set_style": {
-          "description": "Configures decorative visual properties.",
+          "description": "Configures compositor-level decorative visual properties.",
           "args": {
             "$ref": "#/$defs/LayerStyle"
           }
         },
-        "set_root": {
-          "description": "Attaches a tc_widget scene graph root to this layer.",
+        "set_surface": {
+          "description": "Attaches a tc_surface (grid, pixel) as the layer's visual content.",
           "args": {
             "type": "object",
             "required": [
-              "widget"
+              "surface_id"
             ],
             "properties": {
-              "widget": {
-                "$ref": "#/$defs/Widget"
+              "surface_id": {
+                "type": "string",
+                "description": "Target tc_surface ID"
+              }
+            }
+          }
+        },
+        "set_grab": {
+          "description": "Requests modal input grabbing for this layer.",
+          "args": {
+            "type": "object",
+            "required": [
+              "grab"
+            ],
+            "properties": {
+              "grab": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether to exclusively route input events to this layer"
               }
             }
           }
@@ -651,69 +863,82 @@
               }
             }
           }
-        }
-      }
-    },
-    "tc_widget": {
-      "description": "Retained-mode declarative UI element in the layer scene graph.",
-      "requests": {},
-      "events": {
-        "click": {
-          "description": "Emitted when a button or clickable element is triggered.",
+        },
+        "key": {
+          "description": "Emitted when a keyboard event is routed to this layer.",
           "args": {
             "type": "object",
             "required": [
-              "widget_id"
+              "key"
             ],
             "properties": {
-              "widget_id": {
-                "type": "string"
+              "key": {
+                "type": "string",
+                "description": "Key identifier symbol (e.g. Enter, Escape, Tab, ArrowDown, a)"
+              },
+              "text": {
+                "type": "string",
+                "description": "Printable UTF-8 string payload"
+              },
+              "modifiers": {
+                "$ref": "#/$defs/KeyModifiers"
               }
             }
           }
         },
-        "change": {
-          "description": "Emitted on real-time text input edits (for debounce/fuzzy filtering).",
+        "mouse": {
+          "description": "Emitted when a mouse event occurs over this layer.",
           "args": {
             "type": "object",
             "required": [
-              "widget_id",
-              "value",
-              "cursor_pos"
+              "action",
+              "col",
+              "row"
             ],
             "properties": {
-              "widget_id": {
-                "type": "string"
+              "action": {
+                "type": "string",
+                "enum": [
+                  "press",
+                  "release",
+                  "move",
+                  "scroll"
+                ]
               },
-              "value": {
-                "type": "string"
-              },
-              "cursor_pos": {
+              "col": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "row": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "button": {
+                "type": "string",
+                "enum": [
+                  "left",
+                  "middle",
+                  "right"
+                ]
+              },
+              "modifiers": {
+                "$ref": "#/$defs/KeyModifiers"
               }
             }
           }
         },
-        "submit": {
-          "description": "Emitted on Enter keypress or double-click item selection.",
+        "focus": {
+          "description": "Emitted when this layer gains keyboard focus.",
           "args": {
             "type": "object",
-            "required": [
-              "widget_id"
-            ],
-            "properties": {
-              "widget_id": {
-                "type": "string"
-              },
-              "selected_index": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "value": {
-                "type": "string"
-              }
-            }
+            "properties": {}
+          }
+        },
+        "blur": {
+          "description": "Emitted when this layer loses keyboard focus.",
+          "args": {
+            "type": "object",
+            "properties": {}
           }
         }
       }
@@ -778,10 +1003,11 @@
       "enum": [
         "pty",
         "stream",
-        "grid"
+        "grid",
+        "pixel"
       ],
       "default": "pty",
-      "description": "Surface archetype: pty (isolated VT sandbox with dual buffers), stream (pure text append stream + scrollback), grid (programmatic 2D cell matrix)"
+      "description": "Surface archetype: pty (isolated VT sandbox with dual buffers), stream (pure text append stream + scrollback), grid (programmatic 2D cell matrix), pixel (raster graphics and image buffer)"
     },
     "BufferType": {
       "type": "string",
@@ -837,37 +1063,6 @@
       ],
       "default": "none",
       "description": "Border drawing style"
-    },
-    "Direction": {
-      "type": "string",
-      "enum": [
-        "column",
-        "row"
-      ],
-      "default": "column",
-      "description": "Flexbox layout direction"
-    },
-    "Align": {
-      "type": "string",
-      "enum": [
-        "left",
-        "center",
-        "right"
-      ],
-      "default": "left",
-      "description": "Cross-axis alignment"
-    },
-    "Justify": {
-      "type": "string",
-      "enum": [
-        "start",
-        "center",
-        "end",
-        "space_between",
-        "space_around"
-      ],
-      "default": "start",
-      "description": "Main-axis distribution"
     },
     "LayerStyle": {
       "type": "object",
@@ -931,35 +1126,38 @@
         }
       }
     },
-    "UnderlineStyle": {
-      "type": "string",
-      "enum": [
-        "none",
-        "single",
-        "double",
-        "curly",
-        "dotted",
-        "dashed"
-      ],
-      "default": "none",
-      "description": "Underline stroke rendering style"
-    },
-    "WidgetStyle": {
+    "KeyModifiers": {
       "type": "object",
       "properties": {
-        "bg": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Background hex or semantic theme token"
+        "ctrl": { "type": "boolean", "default": false },
+        "alt": { "type": "boolean", "default": false },
+        "shift": { "type": "boolean", "default": false },
+        "meta": { "type": "boolean", "default": false }
+      }
+    },
+    "Cell": {
+      "type": "object",
+      "required": [
+        "char"
+      ],
+      "properties": {
+        "char": {
+          "type": "string",
+          "description": "Single UTF-8 character / grapheme"
         },
         "fg": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Foreground hex or semantic theme token"
+          "description": "Foreground hex (#89b4fa) or semantic theme token"
+        },
+        "bg": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Background hex (#1e1e2e) or semantic theme token"
         },
         "bold": {
           "type": "boolean",
@@ -973,301 +1171,13 @@
           "type": "boolean",
           "default": false
         },
+        "underline": {
+          "type": "boolean",
+          "default": false
+        },
         "strikethrough": {
           "type": "boolean",
           "default": false
-        },
-        "underline": {
-          "oneOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "$ref": "#/$defs/UnderlineStyle"
-            }
-          ],
-          "default": false
-        },
-        "underline_color": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Underline stroke color hex or semantic theme token"
-        },
-        "font_family": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "enum": [
-            "mono",
-            "proportional",
-            null
-          ],
-          "default": "mono",
-          "description": "Font family category"
-        }
-      }
-    },
-    "TextSpan": {
-      "type": "object",
-      "required": [
-        "text"
-      ],
-      "properties": {
-        "text": {
-          "type": "string",
-          "description": "Text span string content"
-        },
-        "style": {
-          "$ref": "#/$defs/WidgetStyle",
-          "description": "Styling attributes for this text span"
-        },
-        "link": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Hyperlink URL destination (e.g. https://... or file:///...)"
-        }
-      }
-    },
-    "A11yRole": {
-      "type": "string",
-      "enum": [
-        "dialog",
-        "alert",
-        "button",
-        "textbox",
-        "list",
-        "listitem",
-        "progressbar",
-        "status",
-        "generic"
-      ],
-      "description": "Assistive technology role"
-    },
-    "A11yLive": {
-      "type": "string",
-      "enum": [
-        "polite",
-        "assertive",
-        "off"
-      ],
-      "default": "off",
-      "description": "Screen reader live region priority"
-    },
-    "A11y": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Spoken label overriding visual text"
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Extended contextual hint"
-        },
-        "role": {
-          "$ref": "#/$defs/A11yRole"
-        },
-        "live": {
-          "$ref": "#/$defs/A11yLive"
-        },
-        "hidden": {
-          "type": "boolean",
-          "default": false,
-          "description": "Hide purely decorative nodes from assistive tree"
-        }
-      }
-    },
-    "WidgetType": {
-      "type": "string",
-      "enum": [
-        "box",
-        "text",
-        "button",
-        "input",
-        "list",
-        "table",
-        "progress"
-      ],
-      "description": "Declarative widget element type"
-    },
-    "ButtonVariant": {
-      "type": "string",
-      "enum": [
-        "default",
-        "primary",
-        "danger"
-      ],
-      "default": "default",
-      "description": "Semantic button styling"
-    },
-    "Widget": {
-      "type": "object",
-      "required": [
-        "type"
-      ],
-      "properties": {
-        "type": {
-          "$ref": "#/$defs/WidgetType"
-        },
-        "id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Element ID for event routing"
-        },
-        "a11y": {
-          "$ref": "#/$defs/A11y"
-        },
-        "style": {
-          "$ref": "#/$defs/WidgetStyle"
-        },
-        "direction": {
-          "$ref": "#/$defs/Direction"
-        },
-        "align": {
-          "$ref": "#/$defs/Align"
-        },
-        "justify": {
-          "$ref": "#/$defs/Justify"
-        },
-        "margin_top": {
-          "type": "integer",
-          "default": 0
-        },
-        "margin_bottom": {
-          "type": "integer",
-          "default": 0
-        },
-        "margin_left": {
-          "type": "integer",
-          "default": 0
-        },
-        "margin_right": {
-          "type": "integer",
-          "default": 0
-        },
-        "gap": {
-          "type": "integer",
-          "default": 0
-        },
-        "text": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Static text string"
-        },
-        "content": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Alias for text content"
-        },
-        "spans": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/$defs/TextSpan"
-          },
-          "description": "Structured rich text spans (replaces raw ANSI escape formatting)"
-        },
-        "title": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Section header title"
-        },
-        "label": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Button label"
-        },
-        "variant": {
-          "$ref": "#/$defs/ButtonVariant"
-        },
-        "focused": {
-          "type": "boolean",
-          "default": false
-        },
-        "placeholder": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Input field placeholder text"
-        },
-        "value": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Input field current string value"
-        },
-        "cursor_pos": {
-          "type": "integer",
-          "default": 0
-        },
-        "items": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "List item strings"
-        },
-        "selected_index": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "description": "Selected item / row index"
-        },
-        "headers": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Table column headers"
-        },
-        "rows": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "description": "2D table row cell strings"
-        },
-        "progress_val": {
-          "type": "number",
-          "minimum": 0.0,
-          "maximum": 1.0,
-          "default": 0.0
-        },
-        "children": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Widget"
-          },
-          "description": "Child widget nodes"
         }
       }
     },
@@ -1301,6 +1211,14 @@
         "accessibility_tree": {
           "type": "boolean",
           "default": true
+        },
+        "pixel_surfaces": {
+          "type": "boolean",
+          "default": true
+        },
+        "shm_zero_copy": {
+          "type": "boolean",
+          "default": false
         }
       }
     },
