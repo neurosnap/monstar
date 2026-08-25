@@ -400,32 +400,45 @@
             "properties": {}
           }
         },
-        "put_cells": {
-          "description": "Updates character cells directly in a grid surface.",
+        "put_buffer": {
+          "description": "Updates character cells directly in a grid surface using a binary buffer ABI payload.",
           "args": {
             "type": "object",
             "required": [
-              "x",
-              "y",
-              "cells"
+              "cols",
+              "rows",
+              "format",
+              "data"
             ],
             "properties": {
               "x": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Starting column index (0-based)"
+                "default": 0,
+                "description": "Starting column offset (0-based)"
               },
               "y": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Starting row index (0-based)"
+                "default": 0,
+                "description": "Starting row offset (0-based)"
               },
-              "cells": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/Cell"
-                },
-                "description": "Array of styled character cells"
+              "cols": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Width of the cell buffer region in character cells"
+              },
+              "rows": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Height of the cell buffer region in character cells"
+              },
+              "format": {
+                "$ref": "#/$defs/BufferFormat"
+              },
+              "data": {
+                "type": "string",
+                "description": "Base64-encoded contiguous binary cell buffer conforming to the specified format ABI"
               }
             }
           }
@@ -1135,51 +1148,26 @@
         "meta": { "type": "boolean", "default": false }
       }
     },
-    "Cell": {
-      "type": "object",
-      "required": [
-        "char"
+    "BufferFormat": {
+      "type": "string",
+      "enum": [
+        "compact_v1",
+        "rich_v1"
       ],
-      "properties": {
-        "char": {
-          "type": "string",
-          "description": "Single UTF-8 character / grapheme"
-        },
-        "fg": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Foreground hex (#89b4fa) or semantic theme token"
-        },
-        "bg": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Background hex (#1e1e2e) or semantic theme token"
-        },
-        "bold": {
-          "type": "boolean",
-          "default": false
-        },
-        "dim": {
-          "type": "boolean",
-          "default": false
-        },
-        "italic": {
-          "type": "boolean",
-          "default": false
-        },
-        "underline": {
-          "type": "boolean",
-          "default": false
-        },
-        "strikethrough": {
-          "type": "boolean",
-          "default": false
-        }
-      }
+      "description": "Binary buffer ABI format: compact_v1 (8 bytes/cell, 256 colors/styles) or rich_v1 (32 bytes/cell, 32-bit TrueColor RGBA, undercurl, hyperlinks, grapheme pool)"
+    },
+    "UnderlineStyle": {
+      "type": "string",
+      "enum": [
+        "none",
+        "straight",
+        "double",
+        "curly",
+        "dotted",
+        "dashed"
+      ],
+      "default": "none",
+      "description": "Typographic underline styling"
     },
     "FeatureFlags": {
       "type": "object",

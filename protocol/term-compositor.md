@@ -1,25 +1,24 @@
 # Terminal Compositing (TC) Protocol Specification
 
-**Version:** 1.0.0-draft
-**Status:** Working Draft
-**Target Audience:** Terminal Emulator Developers, CLI Tool Authors, TUI Framework Maintainers
+**Version:** 1.0.0-draft **Status:** Working Draft **Target Audience:** Terminal Emulator Developers, CLI Tool Authors, TUI Framework Maintainers
 
----
+______________________________________________________________________
 
 ## 1. Abstract & Motivation
 
 The terminal emulator ecosystem has traditionally relied on a single in-band stream (`/dev/tty` / serial discipline) where text characters, styling attributes, and cursor movements share the same linear channel.
 
 Attempting to render modern UI elements (e.g., floating modal dialogs, cursor-anchored autocomplete dropdowns, command palettes, ephemeral toasts) using in-band ANSI escape sequences leads to:
+
 1. **Screen Corruption**: Drawing over character cells destroys underlying scrollback history and cell state.
-2. **Alternate Screen Trap**: Full-screen TUIs are forced into the alternate screen buffer (`\x1b[?1049h`), disabling native trackpad scrolling and terminal search.
-3. **Escapes Desynchronization**: High-throughput terminal streams desynchronize and glitch when mixed with cursor-positioning escapes.
+1. **Alternate Screen Trap**: Full-screen TUIs are forced into the alternate screen buffer (`\x1b[?1049h`), disabling native trackpad scrolling and terminal search.
+1. **Escapes Desynchronization**: High-throughput terminal streams desynchronize and glitch when mixed with cursor-positioning escapes.
 
 The **Terminal Compositing (TC)** Protocol standardizes an **out-of-band, multi-surface 2D compositing protocol** between CLI applications and terminal emulators.
 
 Borrowing the architectural rigor of display servers like **Wayland**, TC models the terminal emulator as a multi-surface display server that arbitrates declarative overlay surfaces above the base PTY stream.
 
----
+______________________________________________________________________
 
 ## 2. Core Architectural Principles
 
@@ -70,7 +69,9 @@ Borrowing the architectural rigor of display servers like **Wayland**, TC models
 ```
 
 ### 2.1 Deconstructing Legacy Primary vs. Alternate Screen: The Surface Model
+
 In traditional terminal emulators, the binary switch between the "Primary Buffer" (with scrollback) and the "Alternate Screen Buffer" (`\x1b[?1049h` / `smcup`/`rmcup`) was an in-band hack created for single-wire serial terminals. It caused the **Alternate Screen Trap**:
+
 - Native trackpad and mouse scrollback are disabled.
 - Terminal search is broken or inspects the wrong buffer.
 - Screen history cannot be multiplexed or split without escape desynchronization and ANSI corruption.
@@ -108,28 +109,33 @@ TC eliminates the global primary/alt screen toggle. Instead, **scrollback histor
 ```
 
 ### 2.2 Surface Archetypes
+
 TC formalizes four distinct surface archetypes:
+
 1. **`pty` (Legacy PTY Surface Sandbox - "XWayland for Terminals")**:
    - Encapsulates an isolated VT parser instance and slave PTY (`/dev/pts/N` or Windows ConPTY).
    - Manages internal dual buffers (Primary with infinite scrollback + Alternate screen for legacy TUIs) in complete isolation.
    - **Strict Spatial Clamping**: Coordinates are constrained to $[0..W-1, 0..H-1]$. Escapes like `\x1b[2J` or rogue cursor moves cannot corrupt adjacent panes or sibling surfaces.
    - **Zero Upward Escapes**: Emits no ANSI escapes back to the compositor—only clean dirty-cell rectangles.
-2. **`stream` (Pure Text / Log Stream Surface)**:
+1. **`stream` (Pure Text / Log Stream Surface)**:
    - Structured, append-only sequential text stream with dedicated infinite scrollback, search, and text selection.
-3. **`grid` (Programmatic 2D Cell Matrix)**:
-   - Direct 2D addressable cell canvas $(W \times H)$ for modern TUI engines and overlay surfaces that bypass ANSI escape serialization entirely.
-4. **`pixel` (Continuous Raster Graphics / Image Surface)**:
+1. **`grid` (Programmatic 2D Cell Matrix)**:
+   - Direct 2D addressable cell canvas $(W \\times H)$ for modern TUI engines and overlay surfaces that bypass ANSI escape serialization entirely.
+1. **`pixel` (Continuous Raster Graphics / Image Surface)**:
    - Continuous 2D pixel buffer (PNG, JPEG, WebP, raw RGBA32, or shared memory `memfd`) composited directly by the display server.
    - Operates as an independent subsurface (`wl_subsurface` model) anchored to a cell coordinate in a parent `grid`/`pty` or a scrolling line in a `stream`.
    - Replaces in-band image hacks (Kitty Graphics Protocol, Sixel, iTerm2 inline images) with out-of-band, flicker-free composited graphics.
 
 ### 2.3 True Multiplexer Isolation
+
 Because each `tc_surface` owns its own scrollback buffer, cursor state, and mode flags:
+
 - Multiplexers (tiling window splits, tabs, sidebars) create $N$ distinct surfaces without interleaved escape parsing.
 - Scrolling back 1,000 lines in Pane A has zero impact on Pane B running a real-time log feed or Pane C running `neovim` in an alternate buffer.
 - Overlays and layers can attach globally to the workspace or scope locally to an individual surface.
 
 ### 2.4 Separation of Concerns: Display Server vs. Client-Side Toolkits
+
 TC strictly separates the role of the display server/compositor from client-side UI toolkits (mirroring the architectural boundary of Wayland):
 
 1. **The Compositor's Role (Display Server & Arbitration)**:
@@ -137,17 +143,20 @@ TC strictly separates the role of the display server/compositor from client-side
    - Manages overlay layers (`tc_layer`), coordinate anchoring (cursor-relative, pane-relative, centered), and visual effects (drop shadows, backdrop dimming, window borders).
    - Routes keyboard, mouse, and touch input to focused surfaces/layers.
    - Handles global out-of-band services: clipboard exchange, system notifications, window title negotiation, and color theme synchronization.
-2. **The Client's Role (UI Rendering & Toolkit State)**:
+1. **The Client's Role (UI Rendering & Toolkit State)**:
    - Client applications (or client-side libraries like `monstar-ui`, `vaxis`, `ratatui`, `bubbletea`) retain full control over their UI logic, component trees, keyboard shortcuts, and layout algorithms.
    - Clients render into TC surfaces via programmatic cell matrices (`grid`), append-only text streams (`stream`), or pixel graphic buffers (`pixel`).
    - **Why No Server-Side Widgets**: Baking widgets into the core display server protocol forces the compositor into becoming a monolithic GUI toolkit with endless layout and styling variants. Keeping widgets client-side guarantees maximum client autonomy, rapid toolkit iteration, and a minimal, rock-solid compositor protocol.
 
 ### 2.5 Wayland-Inspired Asymmetric Request/Event Model
+
 TC defines two distinct directions of asynchronous communication:
-- **Requests (Client $\to$ Server)**: Asynchronous instructions to create objects, configure properties, update surface buffers, and commit transactions.
-- **Events (Server $\to$ Client)**: Asynchronous notifications emitted by the terminal emulator (keyboard/mouse input, window focus changes, layer dismissal, terminal resize).
+
+- **Requests (Client $\\to$ Server)**: Asynchronous instructions to create objects, configure properties, update surface buffers, and commit transactions.
+- **Events (Server $\\to$ Client)**: Asynchronous notifications emitted by the terminal emulator (keyboard/mouse input, window focus changes, layer dismissal, terminal resize).
 
 ### 2.6 Optimistic Object Allocation & Atomic Transactions
+
 - **Zero-Roundtrip Staging**: Clients allocate object IDs locally and immediately send configuration requests without waiting for server acknowledgments.
 - **Atomic Commits (`commit`)**: Changes staged on a layer or surface do not render until the client sends a `commit` request, preventing visual tearing and partial updates.
 
@@ -189,75 +198,87 @@ Root Scene Graph (1 Global tc_scene per Terminal Window/Compositor)
 ```
 
 #### Hierarchy Invariants & Roles:
+
 1. **The Root Scene (`tc_scene`)**:
    - There is **exactly 1 root scene graph** per terminal compositor instance.
    - It maintains the unified 2D terminal grid coordinate system, tracks dirty/damaged character regions, manages opacity and shadows, and executes the final 2D rendering pass.
-2. **Layer Stacking Tiers (`wlr-layer-shell` model)**:
+1. **Layer Stacking Tiers (`wlr-layer-shell` model)**:
    - Layers define canonical **z-order stacking tiers** tailored to terminal UI:
      - `Background`: Theme background fill and window padding/margins.
      - `Bottom`: Persistent bottom status strips, keybind helper docks, and footer info.
      - `Normal`: The primary tiling/tab workspace containing active shell sessions and tool panes.
      - `Top`: Terminal tab bar and window header.
      - `Overlay`: Window-wide modals, command palettes, search finders, and global toasts.
-3. **Surface Scene Trees (`tc_surface`)**:
+1. **Surface Scene Trees (`tc_surface`)**:
    - Each terminal pane or split is a **subordinate scene tree** attached to the Normal/Workspace tier.
    - A surface's tree encapsulates its visual borders/decorations, backing character cell matrices, and child overlays.
    - Resizing a pane, splitting the window, or switching tabs automatically transforms, clips, or hides all child decorations and surface-scoped overlays.
-4. **Layer Scoping & Clipping**:
+1. **Layer Scoping & Clipping**:
    - **Global Layers** (`parent_surface = null`): Attach directly to the workspace-level `Top` or `Overlay` tiers. They are positioned relative to the full terminal window viewport (e.g. centered confirmation modals, global command palette).
    - **Surface-Scoped Layers** (`parent_surface = "<surface_id>"`): Attach as child nodes inside that surface's scene tree. They position relative to that surface's local origin or active text cursor (e.g. inline autocomplete menus) and are clipped to the surface's bounding box.
 
----
+______________________________________________________________________
 
 ## 3. Protocol Definition Format: JSON Protocol Schema
 
 Rather than using XML (which lacks native parser support in many modern toolchains including Zig's standard library), TC interfaces are formally specified using a standardized **JSON Protocol Schema** (inspired by Wayland XML and Language Server Protocol metamodels).
 
-The canonical schema is maintained at [`protocol/term-compositor.schema.json`](file:///home/erock/dev/term/monstar/protocol/term-compositor.schema.json).
+The canonical schema is maintained at \[`protocol/term-compositor.schema.json`\](file:///home/erock/dev/term/monstar/protocol/term-compositor.schema.json).
 
 ### 3.1 Schema Structure
+
 The protocol specification JSON defines:
+
 - **`interfaces`**: Top-level object interfaces (`tc_display`, `tc_compositor`, `tc_surface`, `tc_layer`).
 - **`requests`**: Methods invoked by the client on a specific object.
 - **`events`**: Notifications emitted by the server targeting a specific object.
 - **`$defs`**: Shared data types, enums, style dictionaries, and accessibility attributes.
 
 ### 3.2 Protocol Code Generator (`tc-scanner`)
-Like `wayland-scanner`, language-specific scanner tools (such as `tc-scanner` in Zig) parse the protocol schema and generate:
-1. Type-safe message representations (enums, structs, unions).
-2. Wire serialization and deserialization routines.
-3. Server dispatch vtables and epoll socket scaffolding.
-4. Client SDK bindings with high-level builders.
 
----
+Like `wayland-scanner`, language-specific scanner tools (such as `tc-scanner` in Zig) parse the protocol schema and generate:
+
+1. Type-safe message representations (enums, structs, unions).
+1. Wire serialization and deserialization routines.
+1. Server dispatch vtables and epoll socket scaffolding.
+1. Client SDK bindings with high-level builders.
+
+______________________________________________________________________
 
 ## 4. Transport, Discovery, & Remote SSH
 
 ### 4.1 Transport Framing
+
 TC messages are transmitted over a stream socket using **newline-delimited JSON (`\n` / LF)** framing.
 
 Each message is a single-line JSON object:
 
-#### Request (Client $\to$ Server):
+#### Request (Client $\\to$ Server):
+
 ```json
 {"object": "<object_id>", "request": "<request_name>", "args": { ... }}
 ```
 
-#### Event (Server $\to$ Client):
+#### Event (Server $\\to$ Client):
+
 ```json
 {"object": "<object_id>", "event": "<event_name>", "args": { ... }}
 ```
 
 ### 4.2 Discovery Environment Variable
+
 When an TC-compliant terminal emulator spawns a child process or shell, it MUST export:
+
 - **`TC_SOCK`** (Primary) or **`TERMINAL_COMPOSITOR_SOCK`**
 - Unix/macOS: Path to Unix domain socket (e.g., `$XDG_RUNTIME_DIR/tc_<pid>.sock` or `/tmp/tc_<pid>.sock`)
 - Windows: Named Pipe path (e.g., `\\.\pipe\tc_<pid>`)
 
 ### 4.3 Security & Permissions
+
 - Sockets MUST be created with restricted file permissions (`0700` / `0600`), owned by the user's UID/GID.
 
 ### 4.4 100% SSH Forwarding Compatibility (No FD Passing)
+
 Because TC transmits pure stream messages and **does not require Unix file descriptor passing (`SCM_RIGHTS`)**, it works transparently across OpenSSH Unix socket forwarding:
 
 ```ssh_config
@@ -270,9 +291,10 @@ Host *
 Remote CLI tools write standard JSON requests to the forwarded socket. The remote host requires no display server, graphics stack, or compositor daemon.
 
 ### 4.5 Graceful Degradation
+
 CLI tools MUST check for the presence and accessibility of `$TC_SOCK`. If absent or unreachable, applications MUST degrade gracefully to standard TTY/ANSI prompts without failing.
 
----
+______________________________________________________________________
 
 ## 5. Core Protocol Interfaces
 
@@ -302,13 +324,14 @@ Below is the formal specification of core TC interfaces:
               └──────── attaches to ───────┘
 ```
 
----
+______________________________________________________________________
 
 ### 5.1 `tc_display` (Core Singleton Interface)
 
 The global connection endpoint representing the terminal display server, session properties, and capability negotiation.
 
 #### Requests:
+
 - **`hello`**: Initial connection handshake sent by the client.
   - `client_name` (`string`): Identifying name of the client (e.g. `"fzf"`, `"monstar-ui"`, `"git-tool"`).
   - `client_version` (`string`, optional): Client version string.
@@ -336,6 +359,7 @@ The global connection endpoint representing the terminal display server, session
   - `urgency` (`string`, optional): `"low"` | `"normal"` | `"critical"`.
 
 #### Events:
+
 - **`capabilities`**: Response to `hello` / `get_capabilities`, broadcasting emulator metadata, active interface versions, and enabled feature flags.
   - `protocol_version` (`integer`)
   - `emulator` (`string`): Emulator name and version (e.g. `"monstar 1.1.0"`).
@@ -356,13 +380,14 @@ The global connection endpoint representing the terminal display server, session
   - `name` (`string`): Error identifier symbol.
   - `message` (`string`): Human-readable error description.
 
----
+______________________________________________________________________
 
 ### 5.2 `tc_compositor` (Surface & Layer Factory)
 
 Factory interface for creating composited surfaces and overlay layers.
 
 #### Requests:
+
 - **`create_surface`**: Instantiates a new independent display surface (for multiplexer panes, standalone streams, programmatic grids, or raster pixel images).
   - `surface_id` (`string`): Unique client-allocated surface identifier.
   - `type` (`string`): `"pty"` | `"stream"` | `"grid"` | `"pixel"`. Default: `"pty"`.
@@ -375,23 +400,27 @@ Factory interface for creating composited surfaces and overlay layers.
   - `type` (`string`): `"modal"` | `"popup"` | `"drawer"` | `"toast"` | `"custom"`. Default: `"modal"`.
   - `parent_surface` (`string`, optional): Target `surface_id` to scope and clip this layer to. If omitted, layers anchor to the global workspace window.
 
----
+______________________________________________________________________
 
 ### 5.3 `tc_surface` (Composable Surface Interface)
 
 Represents an independent rendering surface (such as a sandboxed legacy PTY pane, a text stream, a 2D grid canvas, or an anchored pixel graphic).
 
 #### Requests:
+
 - **`resize`**: Requests geometry resizing for this surface.
   - `cols` (`integer`, min 1)
   - `rows` (`integer`, min 1)
 - **`set_title`**: Sets the surface or tab title.
   - `title` (`string`)
 - **`clear_scrollback`**: Clears the scrollback history buffer for this surface without disturbing active cell contents.
-- **`put_cells`**: Directly updates character cells in a `grid` surface.
-  - `x` (`integer`): Starting column offset (0-indexed).
-  - `y` (`integer`): Starting row offset (0-indexed).
-  - `cells` (`array` of `object` or `array` of `string`): Cell payload. Each cell contains `char` (`string`), optional `fg` (`string`), optional `bg` (`string`), and optional style flags (`bold`, `dim`, `italic`, `underline`, `strikethrough`).
+- **`put_buffer`**: Updates character cells directly in a `grid` surface using a flat binary buffer ABI payload.
+  - `x` (`integer`, default 0, optional): Starting column offset (0-indexed).
+  - `y` (`integer`, default 0, optional): Starting row offset (0-indexed).
+  - `cols` (`integer`, min 1): Width of the cell buffer region in character cells.
+  - `rows` (`integer`, min 1): Height of the cell buffer region in character cells.
+  - `format` (`string`): `"compact_v1"` | `"rich_v1"`.
+  - `data` (`string`): Base64-encoded contiguous binary cell buffer conforming to the specified format ABI.
 - **`write_text`**: Appends text content to a `stream` surface.
   - `text` (`string`): Text content to append.
 - **`set_buffer`**: Uploads raster pixel bitmap data to a `pixel` surface.
@@ -420,6 +449,7 @@ Represents an independent rendering surface (such as a sandboxed legacy PTY pane
 - **`destroy`**: Destroys the surface, releases compositor memory/GPU textures, and closes any associated child PTY descriptors.
 
 #### Events:
+
 - **`configure`**: Emitted when the surface viewport geometry or cell size changes.
   - `grid_cols` (`integer`)
   - `grid_rows` (`integer`)
@@ -434,13 +464,140 @@ Represents an independent rendering surface (such as a sandboxed legacy PTY pane
   - `active_buffer` (`string`): `"primary"` | `"alternate"`.
   - `title` (`string`)
 
----
+______________________________________________________________________
+
+### 5.3.1 Binary Buffer ABI Specification (`compact_v1` & `rich_v1`)
+
+Rather than serializing thousands of nested JSON dictionaries per frame, TC standardizes **two contiguous binary memory ABIs** for updating 2D `grid` surfaces.
+
+These binary buffers are Base64-encoded directly into the `data` field of a single-line `put_buffer` JSON request:
+
+1. **100% SSH & Socket Forwarding Compatible**: Transmits over pure stream sockets without requiring Unix file descriptor passing (`SCM_RIGHTS`) or host-local shared memory.
+1. **Zero-Allocation Deserialization**: The compositor decodes the Base64 bytes directly into cell memory in $O(1)$ allocations without traversing dynamic JSON object trees.
+1. **SIMD Blitting**: Memory layouts are fixed-size and 32/64-bit aligned, allowing vectorized dirty-region diffing and GPU texture uploads.
+
+Cells are laid out in **row-major order**: the cell at coordinate $(x, y)$ within the bounding box is at byte index: $$\\text{offset} = (y \\times \\text{cols} + x) \\times \\text{sizeof}(\\text{Cell})$$
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. Compact ABI (`compact_v1`) - 8 Bytes / Cell (Low Memory)            │
+│ 0                   1                   2                   3          │
+│ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1        │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|                      Unicode Codepoint (u32)                  |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|   FG Color    |   BG Color    |       Style Flags (u16)       |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+└────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ 2. Rich ABI (`rich_v1`) - 32 Bytes / Cell (Fully Featured)             │
+│ 0                   1                   2                   3          │
+│ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1        │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|          Content (Codepoint or Grapheme Pool Offset) (u32)    |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|                     Foreground RGBA (u32)                     |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|                     Background RGBA (u32)                     |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|                  Underline Color RGBA (u32)                   |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|                     Hyperlink ID / Ref (u32)                  |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│|                       Rich Flags (u32)                        |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+│| Width |                   Reserved (7 bytes)                  |       │
+│+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+       │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Tier 1: `compact_v1` (8 Bytes per Cell)
+
+Designed for ultra-low memory footprints, high-throughput log streams, and fast terminal scrolling.
+
+```zig
+pub const CompactCell = extern struct {
+    /// Unicode scalar value (U+0000..U+10FFFF)
+    codepoint: u32,
+    /// Foreground ANSI 256-color palette index
+    fg_color: u8,
+    /// Background ANSI 256-color palette index
+    bg_color: u8,
+    /// Packed bitflags for styling and attributes
+    flags: CompactFlags,
+};
+
+pub const CompactFlags = packed struct(u16) {
+    bold: bool = false,
+    dim: bool = false,
+    italic: bool = false,
+    underline: bool = false,
+    blink: bool = false,
+    reverse: bool = false,
+    strikethrough: bool = false,
+    fg_is_palette: bool = true, // 1 = 256-color palette index, 0 = default theme fg
+    bg_is_palette: bool = true, // 1 = 256-color palette index, 0 = default theme bg
+    reserved: u7 = 0,
+};
+```
+
+#### Tier 2: `rich_v1` (32 Bytes per Cell)
+
+Designed for modern graphical TUIs, full 24-bit TrueColor RGBA blending, dedicated underline coloring (undercurls), complex grapheme clusters (emojis, ZWJ sequences), and OSC 8 hyperlinks.
+
+```zig
+pub const RichCell = extern struct {
+    /// Unicode scalar value OR 32-bit offset into attached grapheme cluster pool
+    content: u32,
+    /// 32-bit RGBA Foreground (0xRRGGBBAA)
+    fg_rgba: u32,
+    /// 32-bit RGBA Background (0xRRGGBBAA)
+    bg_rgba: u32,
+    /// 32-bit RGBA Underline color
+    ul_rgba: u32,
+    /// Hyperlink ID reference (0 = none, >0 references hyperlink URI string pool)
+    hyperlink_id: u32,
+    /// Extended style flags and underline styling
+    flags: RichFlags,
+    /// Visual character width (0 for continuation cell of wide glyphs, 1, 2)
+    width: u8,
+    /// Reserved padding for 64-bit alignment
+    reserved: [7]u8 = [_]u8{0} ** 7,
+};
+
+pub const UnderlineStyle = enum(u3) {
+    none = 0,
+    straight = 1,
+    double = 2,
+    curly = 3,
+    dotted = 4,
+    dashed = 5,
+};
+
+pub const RichFlags = packed struct(u32) {
+    bold: bool = false,
+    dim: bool = false,
+    italic: bool = false,
+    underline_style: UnderlineStyle = .none,
+    blink: bool = false,
+    reverse: bool = false,
+    strikethrough: bool = false,
+    overline: bool = false,
+    has_grapheme_cluster: bool = false, // 1 = content is string pool offset, 0 = raw codepoint
+    is_protected: bool = false,         // Sensitive / password field mask
+    reserved: u19 = 0,
+};
+```
+
+______________________________________________________________________
 
 ### 5.4 `tc_layer` (Overlay Surface Interface)
 
 Represents an active or staging overlay layer shell (adapting `wlr-layer-shell` to terminal compositing).
 
 #### Requests:
+
 - **`set_anchor`**: Defines positioning strategy relative to the parent surface or global workspace layout.
   - `mode` (`string`): `"center"` | `"top_left"` | `"top_right"` | `"bottom_left"` | `"bottom_right"` | `"cursor_relative"` | `"stream_inline"` | `"flex"`.
   - `parent_surface` (`string`, optional): Scopes placement and clipping to a specific `tc_surface`. If omitted, defaults to workspace root.
@@ -469,6 +626,7 @@ Represents an active or staging overlay layer shell (adapting `wlr-layer-shell` 
 - **`destroy`**: Destroys the layer and frees server-side compositor resources.
 
 #### Events:
+
 - **`dismiss`**: Emitted when the layer is dismissed by user interaction.
   - `reason` (`string`): `"escape_key"` | `"backdrop_click"`.
 - **`configure`**: Emitted when the terminal viewport geometry or cell size changes.
@@ -489,7 +647,7 @@ Represents an active or staging overlay layer shell (adapting `wlr-layer-shell` 
 - **`focus`**: Emitted when the layer gains input focus.
 - **`blur`**: Emitted when the layer loses input focus.
 
----
+______________________________________________________________________
 
 ## 6. Capability & Property Subsystem
 
@@ -521,51 +679,54 @@ When a client connects to `$TC_SOCK`, it initiates a handshake to discover activ
 
 ### 6.2 Dynamic Feature Flags & Permissions
 
-| Feature Flag | Type | Description |
-| :--- | :--- | :--- |
-| `features.window_title_mutation` | `boolean` | Permission to change window title / subtitle |
-| `features.theme_customization` | `boolean` | Permission to override theme colors |
-| `features.clipboard_read` | `boolean` | Permission to read system clipboard / primary selection |
-| `features.clipboard_write` | `boolean` | Permission to write to system clipboard |
-| `features.system_notifications` | `boolean` | Desktop notification capability |
-| `features.backdrop_blur` | `boolean` | GPU/software backdrop blur support |
-| `features.accessibility_tree` | `boolean` | Native OS accessibility bridge active |
+| Feature Flag                     | Type      | Description                                             |
+| :------------------------------- | :-------- | :------------------------------------------------------ |
+| `features.window_title_mutation` | `boolean` | Permission to change window title / subtitle            |
+| `features.theme_customization`   | `boolean` | Permission to override theme colors                     |
+| `features.clipboard_read`        | `boolean` | Permission to read system clipboard / primary selection |
+| `features.clipboard_write`       | `boolean` | Permission to write to system clipboard                 |
+| `features.system_notifications`  | `boolean` | Desktop notification capability                         |
+| `features.backdrop_blur`         | `boolean` | GPU/software backdrop blur support                      |
+| `features.accessibility_tree`    | `boolean` | Native OS accessibility bridge active                   |
 
 If a client attempts to use a disabled or unauthorized capability, the server emits an explicit error event without crashing:
+
 ```json
 {"object":"tc_display","event":"error","args":{"code":403,"name":"PERMISSION_DENIED","message":"Clipboard reading is disabled by user policy"}}
 ```
 
 ### 6.3 Property Namespaces
 
-| Namespace | Key | Type | Access | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **`window`** | `window.title` | `string` | Read / Write | Main terminal window title |
-| | `window.subtitle` | `string` | Read / Write | Tab or pane subtitle / status line |
-| | `window.grid` | `object` | Read-only | `{ "cols": 120, "rows": 40 }` |
-| | `window.cell_size` | `object` | Read-only | `{ "width_px": 10, "height_px": 20 }` |
-| | `window.scale` | `number` | Read-only | Fractional DPI scale factor (e.g. `1.5`) |
-| | `window.focused` | `boolean` | Read / Watch | Active window focus state |
-| **`theme`** | `theme.name` | `string` | Read / Write | Active theme name (`"Catppuccin Mocha"`) |
-| | `theme.mode` | `string` | Read / Watch | Active color mode (`"dark"` \| `"light"`) |
-| | `theme.bg` | `string` | Read / Write | Default background color (`"#1e1e2e"`) |
-| | `theme.fg` | `string` | Read / Write | Default foreground color (`"#cdd6f4"`) |
-| | `theme.cursor` | `string` | Read / Write | Cursor color hex |
-| | `theme.ansi` | `array` | Read / Write | 16 ANSI color hex strings |
-| **`clipboard`**| `clipboard.text` | `string` | Read / Write | System clipboard text |
-| | `clipboard.primary`| `string` | Read / Write | Primary selection (middle-click) |
-| **`a11y`** | `a11y.screen_reader_active`| `boolean` | Read / Watch | Active screen reader / AT-SPI detected |
-| | `a11y.high_contrast` | `boolean` | Read / Watch | User requested high-contrast rendering |
-| | `a11y.reduced_motion` | `boolean` | Read / Watch | User requested disabling animations/fades |
+| Namespace       | Key                         | Type      | Access       | Description                               |
+| :-------------- | :-------------------------- | :-------- | :----------- | :---------------------------------------- |
+| **`window`**    | `window.title`              | `string`  | Read / Write | Main terminal window title                |
+|                 | `window.subtitle`           | `string`  | Read / Write | Tab or pane subtitle / status line        |
+|                 | `window.grid`               | `object`  | Read-only    | `{ "cols": 120, "rows": 40 }`             |
+|                 | `window.cell_size`          | `object`  | Read-only    | `{ "width_px": 10, "height_px": 20 }`     |
+|                 | `window.scale`              | `number`  | Read-only    | Fractional DPI scale factor (e.g. `1.5`)  |
+|                 | `window.focused`            | `boolean` | Read / Watch | Active window focus state                 |
+| **`theme`**     | `theme.name`                | `string`  | Read / Write | Active theme name (`"Catppuccin Mocha"`)  |
+|                 | `theme.mode`                | `string`  | Read / Watch | Active color mode (`"dark"` \| `"light"`) |
+|                 | `theme.bg`                  | `string`  | Read / Write | Default background color (`"#1e1e2e"`)    |
+|                 | `theme.fg`                  | `string`  | Read / Write | Default foreground color (`"#cdd6f4"`)    |
+|                 | `theme.cursor`              | `string`  | Read / Write | Cursor color hex                          |
+|                 | `theme.ansi`                | `array`   | Read / Write | 16 ANSI color hex strings                 |
+| **`clipboard`** | `clipboard.text`            | `string`  | Read / Write | System clipboard text                     |
+|                 | `clipboard.primary`         | `string`  | Read / Write | Primary selection (middle-click)          |
+| **`a11y`**      | `a11y.screen_reader_active` | `boolean` | Read / Watch | Active screen reader / AT-SPI detected    |
+|                 | `a11y.high_contrast`        | `boolean` | Read / Watch | User requested high-contrast rendering    |
+|                 | `a11y.reduced_motion`       | `boolean` | Read / Watch | User requested disabling animations/fades |
 
----
+______________________________________________________________________
 
 ## 7. Theming, Styling & Cell Attributes
 
 TC uses structured styling tokens and RGB color representations for out-of-band surfaces and layer chrome.
 
 ### 7.1 Semantic Theme Tokens
+
 Color and style fields accept either explicit RGB hex strings (`"#89b4fa"`) or standard **Semantic Tokens** resolved dynamically by the terminal against the active user palette:
+
 - **Surfaces**: `theme.bg.base`, `theme.bg.surface`, `theme.bg.elevated`
 - **Typography**: `theme.fg.primary`, `theme.fg.muted`
 - **Borders**: `theme.border.default`, `theme.border.focused`
@@ -573,15 +734,17 @@ Color and style fields accept either explicit RGB hex strings (`"#89b4fa"`) or s
 - **ANSI Palette**: `ansi.<name>` (e.g., `ansi.red`, `ansi.bright_cyan`)
 
 ### 7.2 Cascading Priority & Automatic Theme Switching
+
 Visual attributes are resolved in a clear cascading priority:
+
 1. **Compositor Base Defaults**: Built-in fallbacks (e.g. rounded borders, 50% backdrop dim).
-2. **Application Semantic Tokens**: App requests `bg: "theme.bg.surface"`, `border_fg: "theme.accent.primary"`.
-3. **Application Explicit Overrides**: App specifies concrete RGB hex for syntax/artwork.
-4. **End-User Configuration**: User preferences in emulator config (e.g. `monstar.conf`) override defaults.
+1. **Application Semantic Tokens**: App requests `bg: "theme.bg.surface"`, `border_fg: "theme.accent.primary"`.
+1. **Application Explicit Overrides**: App specifies concrete RGB hex for syntax/artwork.
+1. **End-User Configuration**: User preferences in emulator config (e.g. `monstar.conf`) override defaults.
 
-When the user switches terminal themes (e.g. Dark $\leftrightarrow$ Light mode), the compositor immediately redraws all token-backed surfaces and layers in the new palette with zero client roundtrips.
+When the user switches terminal themes (e.g. Dark $\\leftrightarrow$ Light mode), the compositor immediately redraws all token-backed surfaces and layers in the new palette with zero client roundtrips.
 
----
+______________________________________________________________________
 
 ## 8. Accessibility & Assistive Technology (a11y)
 
@@ -591,21 +754,23 @@ Because TC models overlays as explicit layer shells with surface bindings, the t
 
 ### 8.1 Layer-Level Semantic Roles
 
-| Layer Type | Inferred a11y Role | Screen Reader Behavior |
-| :--- | :--- | :--- |
-| `tc_layer(type="modal")` | `ROLE_DIALOG` | Focus shifts to dialog; announces title and modal context. |
-| `tc_layer(type="toast")` | `ROLE_NOTIFICATION` | Announced as an ephemeral live region event. |
-| `tc_layer(type="popup")` | `ROLE_POPUP_MENU` | Announced as anchored menu / suggestion list. |
+| Layer Type               | Inferred a11y Role  | Screen Reader Behavior                                     |
+| :----------------------- | :------------------ | :--------------------------------------------------------- |
+| `tc_layer(type="modal")` | `ROLE_DIALOG`       | Focus shifts to dialog; announces title and modal context. |
+| `tc_layer(type="toast")` | `ROLE_NOTIFICATION` | Announced as an ephemeral live region event.               |
+| `tc_layer(type="popup")` | `ROLE_POPUP_MENU`   | Announced as anchored menu / suggestion list.              |
 
 ### 8.2 Accessibility Requirements & Text Fallbacks for Graphics (`pixel` surfaces)
+
 Because raw pixel buffers are opaque bitmaps, TC enforces strict accessibility and clipboard invariants:
+
 1. **Mandatory `alt_text` Requirement**:
    - Every `pixel` surface MUST be configured with `set_a11y(alt_text="...")` upon attachment.
    - Screen readers navigating the character grid announce the alt text when the virtual cursor lands on the image's bounding box.
-2. **Plain-Text Selection & Copy Fallback (`fallback_text`)**:
+1. **Plain-Text Selection & Copy Fallback (`fallback_text`)**:
    - When a user highlights and copies terminal text across character cells occupied by a `pixel` surface, the compositor copies `fallback_text` (e.g. `"[Image: loss_chart.png]"`) rather than leaving empty whitespace.
 
----
+______________________________________________________________________
 
 ## 9. End-to-End Interaction Examples
 
@@ -621,7 +786,7 @@ Because raw pixel buffers are opaque bitmaps, TC enforces strict accessibility a
  [Request] tc_layer.set_size("confirm_dlg", 46, 9)
  [Request] tc_layer.set_style("confirm_dlg", border="rounded", title=" Deploy ", backdrop_dim=0.55, shadow=true)
  [Request] tc_layer.set_grab("confirm_dlg", true)
- [Request] tc_surface.put_cells("dlg_grid", x=2, y=1, cells=[... "Deploy v2.4.0 to prod?" ...])
+ [Request] tc_surface.put_buffer("dlg_grid", cols=42, rows=7, format="compact_v1", data="UkVBRE1FMjQ...")
  [Request] tc_layer.commit("confirm_dlg")
                                                   ───> (Renders centered modal with dimming)
                                                        (Orca announces dialog)
@@ -635,6 +800,7 @@ Because raw pixel buffers are opaque bitmaps, TC enforces strict accessibility a
 #### Wire Payloads:
 
 **1. Client Staging & Commit:**
+
 ```json
 {"object":"tc_compositor","request":"create_surface","args":{"surface_id":"dlg_grid","type":"grid","cols":42,"rows":7}}
 {"object":"tc_compositor","request":"create_layer","args":{"layer_id":"confirm_dlg","type":"modal"}}
@@ -643,28 +809,31 @@ Because raw pixel buffers are opaque bitmaps, TC enforces strict accessibility a
 {"object":"confirm_dlg","request":"set_size","args":{"cols":46,"rows":9}}
 {"object":"confirm_dlg","request":"set_style","args":{"border":"rounded","title":" Deploy to Production ","backdrop_dim":0.55,"shadow":true}}
 {"object":"confirm_dlg","request":"set_grab","args":{"grab":true}}
-{"object":"dlg_grid","request":"put_cells","args":{"x":2,"y":1,"cells":[{"char":"D"},{"char":"e"},{"char":"p"},{"char":"l"},{"char":"o"},{"char":"y"},{"char":" "},{"char":"v"},{"char":"2"},{"char":"."},{"char":"4"},{"char":"."},{"char":"0"},{"char":"?"}]}}
+{"object":"dlg_grid","request":"put_buffer","args":{"cols":42,"rows":7,"format":"compact_v1","data":"RAAAAAAAAP8BAAAAAAAAZQAAAAAAAP8BAAAAAAAAcAAAAAAAAP8BAAAAAAAAbAAAAAAAAAD/AQAAAAAAAG8AAAAAAAD/AQAAAAAAAHkAAAAAAAD/AQAAAAAAACAAAAAAAAAA/wEAAAAAAAB2AAAAAAAAAP8BAAAAAAAAMgAAAAAAAP8BAAAAAAAA..."}}
 {"object":"confirm_dlg","request":"commit","args":{}}
 ```
 
 **2. Compositor Event Dispatch (Input Routing):**
+
 ```json
 {"object":"confirm_dlg","event":"key","args":{"key":"Enter","modifiers":{"ctrl":false,"alt":false,"shift":false,"meta":false}}}
 ```
 
 **3. Cleanup:**
+
 ```json
 {"object":"confirm_dlg","request":"destroy","args":{}}
 {"object":"dlg_grid","request":"destroy","args":{}}
 ```
 
----
+______________________________________________________________________
 
 ### 9.2 Cursor-Anchored Autocomplete Dropdown
 
 For inline shell suggestions following active prompt coordinates:
 
 **Client Request:**
+
 ```json
 {"object":"tc_compositor","request":"create_surface","args":{"surface_id":"ac_grid","type":"grid","cols":30,"rows":4}}
 {"object":"tc_compositor","request":"create_layer","args":{"layer_id":"ac_menu","type":"popup"}}
@@ -672,16 +841,17 @@ For inline shell suggestions following active prompt coordinates:
 {"object":"ac_menu","request":"set_anchor","args":{"mode":"cursor_relative","offset_x":0,"offset_y":1}}
 {"object":"ac_menu","request":"set_size","args":{"cols":32,"rows":6}}
 {"object":"ac_menu","request":"set_style","args":{"border":"rounded","title":" Suggestions ","shadow":true}}
-{"object":"ac_grid","request":"put_cells","args":{"x":1,"y":0,"cells":[{"char":">","fg":"theme.accent.primary"},{"char":" "},{"char":"g"},{"char":"i"},{"char":"t"},{"char":" "},{"char":"s"},{"char":"t"},{"char":"a"},{"char":"t"},{"char":"u"},{"char":"s"}]}}
+{"object":"ac_grid","request":"put_buffer","args":{"cols":30,"rows":4,"format":"rich_v1","data":"PgAAAAAAAAD6tIn/AAAAAP8BAAAAAAAAAAAAAAAAZwAAAAAAAAD6tIn/AAAAAP8BAAAAAAAAAAAAAAAAaQAAAAAAAAD6tIn/AAAAAP8BAAAAAAAAAAAAAAAA..."}}
 {"object":"ac_menu","request":"commit","args":{}}
 ```
 
 **Compositor Event on Keypress:**
+
 ```json
 {"object":"ac_menu","event":"key","args":{"key":"ArrowDown","modifiers":{"ctrl":false,"alt":false,"shift":false,"meta":false}}}
 ```
 
----
+______________________________________________________________________
 
 ### 9.3 Anchored Pixel Image Subsurface with Accessibility
 
@@ -695,11 +865,98 @@ Displaying an inline plot or diagram pinned to cell coordinates in a parent grid
 {"object":"loss_plot","request":"set_a11y","args":{"alt_text":"Training loss curve decreasing from 2.45 to 0.18 over 50 epochs","fallback_text":"[Plot: epoch_loss.png]"}}
 ```
 
----
+______________________________________________________________________
 
-## 10. Reference Implementations
+## 10. Protocol Extensibility, Versioning & Evolution
 
-- **Protocol Reference Implementation**: Monstar [`src/compositor/`](file:///home/erock/dev/term/monstar/src/compositor/) (Zig)
-- **High-Throughput PTY Isolation Invariant Suite**: [`src/compositor/Compositor.zig`](file:///home/erock/dev/term/monstar/src/compositor/Compositor.zig)
-- **Interactive Python Validation Client**: [`scripts/demo_overlay.py`](file:///home/erock/dev/term/monstar/scripts/demo_overlay.py)
-- **Command Palette Companion**: [`scripts/command_palette.py`](file:///home/erock/dev/term/monstar/scripts/command_palette.py)
+To avoid the stagnation of legacy ANSI sequences while preventing fragmentation across terminal emulators, TC defines a formal extensibility architecture inspired by Wayland protocol development.
+
+### 10.1 The Three-Tier Extensibility Model
+
+Rather than forcing every feature, permission, or hardware capability into the interface registry, TC maintains a strict separation of concerns across three distinct mechanisms:
+
+| Mechanism                           | What It Represents                                                                            | When to Use                                                                                               | Wire Negotiation                                        | Examples                                                                      |
+| :---------------------------------- | :-------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------- | :------------------------------------------------------ | :---------------------------------------------------------------------------- |
+| **1. Interface Extensions**         | New message types (requests/events), object lifecycles, or architectural abstractions.        | Adding new protocols or subsystem factories (e.g. workspace management, session locking, custom shaders). | Handshake `interfaces` map in `hello` / `capabilities`. | `ext_workspace_v1`, `ext_session_lock_v1`, `zmonstar_blur_v1`                 |
+| **2. Capabilities & Feature Flags** | Platform, hardware, or user-security gating on *existing* interfaces without grammar changes. | Gating features that may not be supported on all OS platforms or may be disabled by user security policy. | `features` dictionary in `capabilities` event.          | `features.clipboard_read`, `features.backdrop_blur`, `features.shm_zero_copy` |
+| **3. Dynamic Properties**           | Mutable runtime session and terminal state.                                                   | State values that can be queried, mutated, or continuously monitored.                                     | `property_get`, `property_set`, `property_watch`.       | `window.title`, `theme.mode`, `a11y.high_contrast`                            |
+
+#### Architectural Decision Matrix:
+
+- **"Does the feature require new requests, events, or object IDs?"** $\\implies$ **New Interface Extension**.
+- **"Does the feature toggle existing request behavior based on user permissions or hardware capabilities?"** $\\implies$ **Feature Flag / Capability**.
+- **"Is the value dynamic state that changes during execution?"** $\\implies$ **Dynamic Property**.
+
+______________________________________________________________________
+
+### 10.2 Interface Versioning & Negotiation
+
+Each interface defines an integer version number (starting at `1`). Interface updates follow strict append-only evolution:
+
+1. **The Append-Only Rule**:
+   - Version $N+1$ of an interface MAY add new requests and events.
+   - Version $N+1$ MUST NOT remove, reorder, or alter the signature of any request or event defined in version $\\le N$.
+1. **Version Negotiation**:
+   - During the initial connection handshake (`tc_display.hello`), the client provides its supported maximum version for each interface via `requested_interfaces`:
+     ```json
+     {"object":"tc_display","request":"hello","args":{"client_name":"fzf","requested_interfaces":{"tc_compositor":2,"ext_workspace_v1":1}}}
+     ```
+   - The server replies in `tc_display.capabilities` with the supported maximum version of each interface available on the host:
+     ```json
+     {"object":"tc_display","event":"capabilities","args":{"protocol_version":1,"emulator":"monstar 1.1.0","interfaces":{"tc_compositor":2,"tc_surface":1,"tc_layer":1,"ext_workspace_v1":1}}}
+     ```
+   - The agreed operating version for each interface is $\\min(V\_{\\text{client}}, V\_{\\text{server}})$. Clients and servers MUST NOT emit messages introduced in versions higher than the agreed version.
+
+______________________________________________________________________
+
+### 10.3 Extension Naming & Staging Lifecycle
+
+To allow rapid experimentation without creating permanent legacy baggage, extensions move through three governance tiers (mirroring the Wayland / Khronos staging model):
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. EXPERIMENTAL / VENDOR PROTOTYPES (z<vendor>_<name>_v<N>)     │
+│    • Sandbox for new ideas (e.g. zmonstar_color_grading_v1)     │
+│    • Breaking changes allowed between minor drafts              │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ Consensus & Multi-Emulator Adoption
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. STAGED / MULTI-VENDOR EXTENSIONS (ext_<name>_v<N>)           │
+│    • Standardized cross-emulator specifications                 │
+│    • Joint maintenance (Monstar, Ghostty, WezTerm, Alacritty)   │
+│    • Locked wire format, strictly append-only                   │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ Universal Industry Adoption
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. CORE PROTOCOL (tc_*)                                         │
+│    • Foundational primitives (tc_display, tc_surface, tc_layer) │
+│    • Guaranteed availability on all TC-compliant display servers│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Naming Conventions:
+
+- **`tc_*`**: Core specification interfaces. Guaranteed to be present on any compliant terminal compositor.
+- **`ext_*`**: Standardized, vendor-neutral extension interfaces approved by the terminal compositor working group (e.g. `ext_workspace_v1`, `ext_palette_v1`).
+- **`z<vendor>_*`**: Unstable or experimental vendor extensions (e.g. `zmonstar_custom_shader_v1`). The leading `z` explicitly denotes unstable/draft status.
+
+______________________________________________________________________
+
+### 10.4 Schema Extensibility & Scanner Tooling (`tc-scanner`)
+
+Extension protocols are specified using the same JSON Protocol Schema format as core interfaces. Protocol scanners (such as `tc-scanner` in Zig):
+
+1. Ingest core and extension schema files (e.g. `term-compositor.schema.json` + `ext-workspace-v1.json`).
+1. Generate modular, type-safe IPC dispatch tables and client SDK bindings.
+1. Automatically generate runtime version negotiation guards so applications gracefully fall back when running against compositors that lack specific extensions.
+
+______________________________________________________________________
+
+## 11. Reference Implementations
+
+- **Protocol Reference Implementation**: Monstar \[`src/compositor/`\](file:///home/erock/dev/term/monstar/src/compositor/) (Zig)
+- **High-Throughput PTY Isolation Invariant Suite**: \[`src/compositor/Compositor.zig`\](file:///home/erock/dev/term/monstar/src/compositor/Compositor.zig)
+- **Interactive Python Validation Client**: \[`scripts/demo_overlay.py`\](file:///home/erock/dev/term/monstar/scripts/demo_overlay.py)
+- **Command Palette Companion**: \[`scripts/command_palette.py`\](file:///home/erock/dev/term/monstar/scripts/command_palette.py)
